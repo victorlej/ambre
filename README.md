@@ -57,7 +57,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
 | **1.2.0** | ✅ publiée | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
 | **1.4** | préparée | Compteur redessiné et juste dès le lancement, mesure image par image pour Allia (sans redémarrer Steam), fils du jeu en priorité interactive (0005), cache des shaders gardé (DXVK 0003) |
-| **1.3** | en compilation | Démarrage de Steam plus rapide : Steam voit la carte réseau et n'attend plus 20 s (correctif 0004) ; plus tard : cache des shaders conservé, priorité des fils du jeu, corrections réseau (How to Fish) |
+| **1.3.0** | ✅ publiée | Démarrage de Steam plus rapide : Steam voit sa carte réseau sans DNS IPv4 et n'attend plus 20 s (correctif 0004) |
 | **2.0** | prévue | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
 | **2.x** | prévue | Génération d'images, DirectX 12 |
 | **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
