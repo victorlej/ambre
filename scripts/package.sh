@@ -100,6 +100,12 @@ fixup() {
             args+=(-change "${ref}" "@loader_path/${rel}/$(basename "${ref}")")
         fi
     done
+    # Les modules de Wine chargent des bibliothèques par leur seul nom (dlopen("libgnutls.30.dylib"),
+    # libMoltenVK, libfreetype) : macOS les cherche alors dans les rpath du module. Comme le moteur
+    # d'origine, on y ajoute Wine/lib (sans ça : pas de connexions sécurisées, pas de Vulkan).
+    case "${f}" in */lib/wine/*-unix/*.so)
+        otool -l "${f}" | grep -q "@loader_path/../../ " || args+=(-add_rpath @loader_path/../../) ;;
+    esac
     [ "${#args[@]}" -gt 0 ] && install_name_tool "${args[@]}" "${f}" 2>/dev/null || true
     codesign -f -s - "${f}" 2>/dev/null || true
 }
