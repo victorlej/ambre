@@ -1,0 +1,13 @@
+build/
+build-tools/
+winecx/
+staging/
+Libraries/
+Libraries.tar.gz*
+addons/
+payload/
+*.tar*
+store-outs.txt
+make.log
+verify-prefix/
+.DS_Store

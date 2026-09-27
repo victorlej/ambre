@@ -1,0 +1,216 @@
+name: Ambre — compilation du moteur
+
+# Compile Ambre (Wine de CrossOver 26.3 sur Wine 11.17, avec les correctifs de patches/) sur un Mac
+# de GitHub, contrôle le résultat, et publie Libraries.tar.gz quand on pousse une étiquette v*.
+on:
+  workflow_dispatch:
+    inputs:
+      opt:
+        description: "Optimisation (normal = -O2, release = -O3, fast = -O0 pour tester un correctif)"
+        type: choice
+        options: [normal, release, fast]
+        default: normal
+  push:
+    tags: ["v*"]
+
+env:
+  WINECX_REPO: https://github.com/dappermint/winecx.git
+  WINECX_COMMIT: e0aa380780b73e20fabcfe78fd42713b94929a53
+  NIXPKGS_REV: ac62194c3917d5f474c1a844b6fd6da2db95077d
+  MOLTENVK_VERSION: "1.4.2"
+  DXVK_VERSION: "1.10.3"
+  DXMT_VERSION: "0.80"
+  # Sans cela, les binaires porteraient la version de macOS du Mac de compilation et
+  # refuseraient de se charger sur un macOS plus ancien.
+  MACOSX_DEPLOYMENT_TARGET: "26.0"
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rosetta
+        run: |
+          /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          /usr/bin/arch -x86_64 /usr/bin/true && echo "Rosetta ok"
+
+      - name: Cache de compilation (réglages)
+        run: |
+          brew install -q ccache mingw-w64
+          {
+            echo "CCACHE_DIR=$HOME/.ccache"
+            echo "CCACHE_MAXSIZE=4G"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo "CCACHE_SLOPPINESS=time_macros,locale,include_file_mtime,include_file_ctime"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_NOHASHDIR=1"
+          } >> "$GITHUB_ENV"
+          mkdir -p ccache-bin
+          # Les compilateurs Windows (mingw, gcc : un kernelbase.dll compilé par llvm-mingw bloque
+          # la connexion de Steam) passent aussi par ccache.
+          for t in x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; do
+            real="$(command -v "$t")"
+            printf '#!/bin/sh\nexec ccache "%s" "$@"\n' "$real" > "ccache-bin/$t"
+            chmod +x "ccache-bin/$t"
+          done
+
+      - name: Cache de compilation (restauration)
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{ env.WINECX_COMMIT }}-${{ hashFiles('patches/**') }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.WINECX_COMMIT }}-
+            ccache-
+
+      - name: Nix
+        uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          determinate: false
+          extra-conf: |
+            extra-platforms = x86_64-darwin
+
+      - name: Sources de Wine et correctifs d'Ambre
+        run: |
+          git init -q winecx
+          git -C winecx remote add origin "$WINECX_REPO"
+          git -C winecx fetch -q --depth 1 origin "$WINECX_COMMIT"
+          git -C winecx checkout -q FETCH_HEAD
+          for p in patches/*.patch; do
+            [ -e "$p" ] || break
+            echo "correctif : $(basename "$p")"
+            git -C winecx apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
+
+      - name: Outils et bibliothèques x86_64 (nix, versions figées)
+        run: |
+          NIXPKGS="github:NixOS/nixpkgs/$NIXPKGS_REV"
+          tools=$(nix build --no-link --print-out-paths "$NIXPKGS#bison" "$NIXPKGS#flex" "$NIXPKGS#pkg-config")
+          toolpath=""; for t in $tools; do toolpath="$t/bin:$toolpath"; done
+          echo "NIX_TOOL_PATH=$toolpath" >> "$GITHUB_ENV"
+          outs=""
+          for p in freetype gnutls libpng zlib brotli bzip2 nettle libtasn1 libidn2 p11-kit libunistring gmp \
+                   vulkan-headers ffmpeg-headless glib orc \
+                   gst_all_1.gstreamer gst_all_1.gst-plugins-base gst_all_1.gst-plugins-good \
+                   gst_all_1.gst-plugins-bad gst_all_1.gst-libav; do
+            for o in dev out lib; do
+              if path=$(nix build --no-link --print-out-paths "$NIXPKGS#legacyPackages.x86_64-darwin.$p.$o" 2>/dev/null); then
+                outs="$outs $path"
+              fi
+            done
+          done
+          echo "$outs" | tr ' ' '\n' | grep . > store-outs.txt
+          pcp=""; incs=""; ldfs=""
+          for d in $outs; do
+            [ -d "$d/lib/pkgconfig" ] && pcp="$d/lib/pkgconfig:$pcp"
+            [ -d "$d/include" ] && incs="$incs -I$d/include"
+            [ -d "$d/lib" ] && ldfs="$ldfs -L$d/lib"
+          done
+          { echo "NIX_PKG_CONFIG_PATH=$pcp"; echo "NIX_INCS=$incs"; echo "NIX_LDFS=$ldfs"; } >> "$GITHUB_ENV"
+          wc -l store-outs.txt
+
+      - name: Outils de compilation de Wine (natifs arm64, plus rapides que sous Rosetta)
+        run: |
+          NIXPKGS="github:NixOS/nixpkgs/$NIXPKGS_REV"
+          outs=$(nix build --no-link --print-out-paths "$NIXPKGS#freetype.dev" "$NIXPKGS#freetype.out" \
+            "$NIXPKGS#libpng.dev" "$NIXPKGS#zlib.dev" "$NIXPKGS#brotli.dev" "$NIXPKGS#bzip2.dev")
+          pcp=""; for d in $outs; do [ -d "$d/lib/pkgconfig" ] && pcp="$d/lib/pkgconfig:$pcp"; done
+          export PATH="$NIX_TOOL_PATH$PATH" SDKROOT="$(/usr/bin/xcrun --show-sdk-path)" CC="ccache /usr/bin/clang" PKG_CONFIG_PATH="$pcp"
+          mkdir build-tools && cd build-tools
+          ../winecx/configure --enable-archs=i386,x86_64 \
+            --without-x --without-wayland --without-gstreamer --without-oss --without-alsa --without-pulse \
+            --without-sane --without-usb --without-v4l2 --without-pcap --without-capi --without-opencl \
+            --without-ffmpeg --without-cups --disable-tests
+          make -j"$(sysctl -n hw.ncpu)" __tooldeps__
+          # wrc cherche ses données de langue à côté de lui
+          rm -rf nls && mkdir nls && ln -s ../../winecx/nls/locale.nls nls/locale.nls
+          test -r nls/locale.nls
+
+      - name: Configuration (x86_64)
+        run: |
+          export PATH="$PWD/ccache-bin:$NIX_TOOL_PATH$PATH" SDKROOT="$(/usr/bin/xcrun --show-sdk-path)"
+          export CC="ccache /usr/bin/clang -arch x86_64" CXX="ccache /usr/bin/clang++ -arch x86_64"
+          export PKG_CONFIG_PATH="$NIX_PKG_CONFIG_PATH"
+          case "${{ inputs.opt }}" in release) OPT="-O3" ;; fast) OPT="-O0 -g0" ;; *) OPT="-O2" ;; esac
+          echo "optimisation : $OPT" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Une fonction plus récente que macOS 26 serait un pointeur nul à l'exécution : erreur ici.
+          export CFLAGS="$OPT -Wno-error=implicit-function-declaration -Werror=unguarded-availability-new $NIX_INCS"
+          export CROSSCFLAGS="$OPT" LDFLAGS="$NIX_LDFS"
+          export ac_cv_func_pipe2=no
+          export ac_cv_lib_soname_freetype="libfreetype.6.dylib" ac_cv_lib_soname_gnutls="libgnutls.30.dylib"
+          export ac_cv_lib_soname_MoltenVK="libMoltenVK.dylib"
+          mkdir build && cd build
+          ../winecx/configure --host=x86_64-apple-darwin24 --with-wine-tools=../build-tools \
+            --enable-archs=i386,x86_64 --disable-tests \
+            --without-x --without-wayland --without-oss --without-alsa --without-pulse --without-sane \
+            --without-usb --without-v4l2 --without-pcap --without-capi --without-opencl --without-cups \
+            --prefix=/opt/ambre || { sed -n '100,400p' config.log; exit 1; }
+          # configure ne fait qu'avertir quand une bibliothèque manque : on refuse.
+          grep -q '^#define HAVE_FFMPEG 1' include/config.h || { echo "::error::ffmpeg absent (vidéos des jeux)"; exit 1; }
+          grep -qE '^GSTREAMER_LIBS *= *.+' Makefile || { echo "::error::gstreamer absent (vidéos et sons)"; exit 1; }
+          echo "ffmpeg et gstreamer : trouvés"
+
+      - name: Compilation
+        run: |
+          export PATH="$PWD/ccache-bin:$NIX_TOOL_PATH$PATH"
+          ncpu=$(sysctl -n hw.logicalcpu)
+          ccache -z >/dev/null
+          set -o pipefail
+          make -C build -j"$(( ncpu + ncpu / 2 ))" 2>&1 | tee make.log
+          if grep -q "has been marked as being introduced in macOS" make.log; then
+            grep -oE "'[a-z_0-9]+' has been marked as being introduced in macOS [0-9.]+" make.log | sort -u
+            echo "::error::fonctions plus récentes que macOS $MACOSX_DEPLOYMENT_TARGET"
+            exit 1
+          fi
+          ccache -s | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Composants (wine-mono, wine-gecko, DXVK, DXMT, MoltenVK)
+        run: scripts/fetch-components.sh winecx
+
+      - name: Assemblage
+        run: |
+          export PATH="$NIX_TOOL_PATH$PATH"
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.${GITHUB_RUN_NUMBER}-test"; fi
+          scripts/package.sh build "$version"
+
+      - name: Contrôles
+        run: scripts/verify.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ambre-libraries
+          path: |
+            Libraries.tar.gz
+            Libraries.tar.gz.sha256
+          compression-level: 0
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ambre-libraries
+      - name: Publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum -c Libraries.tar.gz.sha256
+          sha=$(cut -d' ' -f1 < Libraries.tar.gz.sha256)
+          notes="Ambre ${GITHUB_REF_NAME#v} — Wine de CrossOver 26.3 sur Wine 11.17 ($WINECX_COMMIT), DXVK $DXVK_VERSION, DXMT $DXMT_VERSION, MoltenVK $MOLTENVK_VERSION.
+
+          SHA-256 : \`$sha\`"
+          gh release create "$GITHUB_REF_NAME" Libraries.tar.gz Libraries.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --title "Ambre ${GITHUB_REF_NAME#v}" --notes "$notes"
