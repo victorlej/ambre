@@ -42,6 +42,16 @@ La compilation se fait sur un Mac de GitHub (`.github/workflows/build.yml`) :
 
 Lancer une compilation à la main : onglet **Actions** → « Ambre — compilation du moteur » → **Run workflow**.
 
+## Feuille de route
+
+| Version | Contenu |
+|---|---|
+| **1.0** | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
+| **1.1** | Mode Jeu pour le programme du jeu (chargeur rangé dans un vrai paquet d'app), cache des shaders conservé, priorité des fils du jeu, corrections réseau |
+| **2.0** | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
+| **2.x** | Génération d'images (MetalFX Frame Interpolation, mouvement estimé par VideoToolbox), DirectX 12 |
+| **Plus tard** | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
+
 ## Licence
 
 Wine et les correctifs d'Ambre sont sous licence **GNU LGPL 2.1 ou ultérieure** (`COPYING.LIB`). DXVK, DXMT, MoltenVK, wine-mono et wine-gecko gardent leurs propres licences.
