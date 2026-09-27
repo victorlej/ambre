@@ -38,6 +38,15 @@ echo "== 6. identité de jeu (Mode Jeu)"
 codesign -dvvv "${W}/lib/wine/x86_64-unix/wine" 2>&1 | grep -q 'Identifier=app.allia.game' || bad "chargeur non signé app.allia.game"
 strings "${W}/lib/wine/x86_64-unix/wine" | grep -q 'public.app-category.games' || bad "catégorie jeux absente du chargeur"
 
+echo "== 6b. paquet « Allia Jeu.app » : Wine démarre par ce chemin, correctif 0002 présent"
+bundle="Libraries/Allia Jeu.app/Contents/MacOS/wine"
+[ -L "${bundle}" ] || bad "pas de lien ${bundle}"
+vb="$(WINEPREFIX="${PWD}/verify-prefix" WINEDEBUG=-all AMBRE_WINELOADER="${PWD}/${bundle}" "${bundle}" --version 2>&1)" \
+    || bad "wine --version par le paquet a échoué : ${vb}"
+[ "${vb}" = "${v}" ] || bad "version différente par le paquet : ${vb}"
+plutil -extract CFBundleIdentifier raw "Libraries/Allia Jeu.app/Contents/Info.plist" | grep -qx app.allia.game || bad "identifiant du paquet"
+strings "${W}/lib/wine/x86_64-unix/ntdll.so" | grep -q AMBRE_WINELOADER || bad "correctif 0002 absent de ntdll.so"
+
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
 strings Libraries/DXVK/x64/d3d11.dll | grep -q AMBRE_VERSION || bad "compteur Ambre absent de DXVK (x64)"
