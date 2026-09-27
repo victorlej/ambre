@@ -51,7 +51,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 |---|---|---|
 | **1.0.0** | ✅ publiée | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
 | **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
-| **1.2.0** | compilée, à publier | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
+| **1.2.0** | ✅ publiée | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
 | **1.3** | prévue | Démarrage de Steam plus rapide (interface CEF sous Wine), cache des shaders conservé, priorité des fils du jeu, corrections réseau (How to Fish) |
 | **2.0** | prévue | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
 | **2.x** | prévue | Génération d'images, DirectX 12 |
