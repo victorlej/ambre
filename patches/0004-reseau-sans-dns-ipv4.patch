@@ -1,0 +1,27 @@
+diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
+index b315490..23afa0b 100644
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -1187,6 +1187,7 @@ static DWORD dns_info_alloc( IP_ADAPTER_ADDRESSES *aa, ULONG family, ULONG flags
+         if (!(flags & GAA_FLAG_SKIP_DNS_SERVER))
+         {
+             servers = (DNS_ADDR_ARRAY *)buf;
++            size = sizeof(buf); /* Ambre : taille de départ (n'était pas initialisée) */
+             for (attempt = 0; attempt < 5; attempt++)
+             {
+                 err = DnsQueryConfig( query, 0, name, NULL, servers, &size );
+@@ -1199,7 +1200,13 @@ static DWORD dns_info_alloc( IP_ADAPTER_ADDRESSES *aa, ULONG family, ULONG flags
+                     break;
+                 }
+             }
+-            if (!err)
++            /* Ambre : une carte sans serveur DNS de cette famille (ex. réseau IPv6 seul, partage de
++             * connexion : aucun DNS IPv4) est listée sans DNS, comme sous Windows, au lieu de faire
++             * échouer toute la liste. Sinon Steam ne voit aucune carte réseau et attend 20 s
++             * (« Timed out waiting for network ») avant de se connecter. */
++            if (err == DNS_ERROR_NO_DNS_SERVERS)
++                err = ERROR_SUCCESS;
++            else if (!err)
+             {
+                 next = &aa->FirstDnsServerAddress;
+                 for (i = 0; i < servers->AddrCount; i++)

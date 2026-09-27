@@ -20,6 +20,7 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | `0001-identite-de-jeu.patch` | Le chargeur se déclare comme un jeu (`app.allia.game`, catégorie jeux, `GCSupportsGameMode`) : macOS active le Mode Jeu. |
 | `0002-mode-jeu-pour-le-jeu.patch` | Si `AMBRE_WINELOADER` est posé, Wine lance les nouveaux programmes par ce chemin (le lien `Allia Jeu.app/Contents/MacOS/wine`) : macOS rattache le jeu lui-même à l'app « Allia Jeu », déclarée comme jeu, et lui donne le Mode Jeu. |
 | `0003-chaque-jeu-dans-le-dock.patch` | Si `AMBRE_GAME_BUNDLES` est posé, un programme dont le nom a un lien dans ce dossier (`skyrimse` → `<Nom du jeu>.app/Contents/MacOS/wine`) est lancé par ce chemin : macOS l'affiche dans le Dock sous le nom et la jaquette du jeu (paquets créés par Allia). |
+| `0004-reseau-sans-dns-ipv4.patch` | `GetAdaptersAddresses` : une carte sans serveur DNS de la famille demandée (réseau IPv6 seul, partage de connexion) est listée sans DNS au lieu de faire échouer toute la liste ; taille de départ initialisée. Steam voit enfin sa carte réseau allumée et se connecte sans attendre 20 s (« Timed out waiting for network »). |
 | `dxvk/patches/0001-compteur-ambre.patch` | Compteur d'images d'Ambre dans DXVK (`DXVK_HUD=ambre,lows,cpu,…`) : nom et version du moteur, images/s moyennes, 1 % et 0,1 % les plus lentes, temps d'image, charge du processeur. |
 
 ## Jeux certifiés
@@ -52,7 +53,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.0.0** | ✅ publiée | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
 | **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
 | **1.2.0** | ✅ publiée | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
-| **1.3** | prévue | Démarrage de Steam plus rapide (interface CEF sous Wine), cache des shaders conservé, priorité des fils du jeu, corrections réseau (How to Fish) |
+| **1.3** | en compilation | Démarrage de Steam plus rapide : Steam voit la carte réseau et n'attend plus 20 s (correctif 0004) ; plus tard : cache des shaders conservé, priorité des fils du jeu, corrections réseau (How to Fish) |
 | **2.0** | prévue | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
 | **2.x** | prévue | Génération d'images, DirectX 12 |
 | **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
