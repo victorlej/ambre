@@ -1,0 +1,106 @@
+diff --git a/dlls/nsiproxy.sys/ip.c b/dlls/nsiproxy.sys/ip.c
+index 4a4d9f5..9e76720 100644
+--- a/dlls/nsiproxy.sys/ip.c
++++ b/dlls/nsiproxy.sys/ip.c
+@@ -1067,6 +1067,10 @@ static NTSTATUS ip_unicast_enumerate_all( int family, void *key_data, UINT key_s
+     for (entry = addrs; entry; entry = entry->ifa_next)
+     {
+         if (!entry->ifa_addr || entry->ifa_addr->sa_family != family) continue;
++#ifdef __APPLE__
++        /* Ambre : pas d'adresse sans sa carte (interfaces internes du Mac masquées, voir ndis.c). */
++        if (ambre_hidden_interface( entry->ifa_name, addrs )) continue;
++#endif
+ 
+         if (num < *count)
+         {
+diff --git a/dlls/nsiproxy.sys/ndis.c b/dlls/nsiproxy.sys/ndis.c
+index 5dde172..f03f174 100644
+--- a/dlls/nsiproxy.sys/ndis.c
++++ b/dlls/nsiproxy.sys/ndis.c
+@@ -69,6 +69,10 @@
+ 
+ #include <pthread.h>
+ 
++#ifdef __APPLE__
++#include <ifaddrs.h>
++#endif
++
+ #include "ntstatus.h"
+ #include "windef.h"
+ #include "winbase.h"
+@@ -307,10 +311,43 @@ static struct if_entry *add_entry( UINT index, char *name )
+     return entry;
+ }
+ 
++#ifdef __APPLE__
++/* Ambre : un Mac déclare une vingtaine d'interfaces internes (AirDrop awdl, llw, anpi, tunnels
++ * utun d'iCloud, gif, stf, pont Thunderbolt, point d'accès ap, nan...). Un PC Windows n'en a que
++ * deux ou trois, et des programmes n'en regardent que les premières : Steam ne lit que 10
++ * cartes (rangées dans un ordre quelconque) et, faute d'y trouver la carte connectée, attend
++ * 20 s le réseau au démarrage. On ne présente donc ces interfaces internes que si elles ont
++ * une adresse IPv4 (un VPN, par exemple). Les vraies cartes (en*) et lo0 restent visibles. */
++BOOL ambre_hidden_interface( const char *name, struct ifaddrs *addrs )
++{
++    static const char * const prefixes[] =
++        { "awdl", "llw", "anpi", "utun", "gif", "stf", "bridge", "ap", "nan", "ipsec" };
++    struct ifaddrs *ifa;
++    unsigned int i;
++    size_t len;
++
++    for (i = 0; i < ARRAY_SIZE(prefixes); i++)
++    {
++        len = strlen( prefixes[i] );
++        if (!strncmp( name, prefixes[i], len ) && name[len] >= '0' && name[len] <= '9') break;
++    }
++    if (i == ARRAY_SIZE(prefixes)) return FALSE;
++    for (ifa = addrs; ifa; ifa = ifa->ifa_next)
++        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET && !strcmp( ifa->ifa_name, name ))
++            return FALSE;
++    return TRUE;
++}
++#endif
++
+ static unsigned int update_if_table( void )
+ {
+     struct if_nameindex *indices, *entry;
+     unsigned int append_count = 0;
++#ifdef __APPLE__
++    struct ifaddrs *addrs = NULL;
++
++    if (getifaddrs( &addrs )) addrs = NULL;
++#endif
+ 
+     indices = if_nameindex();
+     if (!indices)
+@@ -321,10 +358,16 @@ static unsigned int update_if_table( void )
+ 
+     for (entry = indices; entry->if_index; entry++)
+     {
++#ifdef __APPLE__
++        if (ambre_hidden_interface( entry->if_name, addrs )) continue;
++#endif
+         if (!find_entry_from_index( entry->if_index ) && add_entry( entry->if_index, entry->if_name ))
+             ++append_count;
+     }
+ 
++#ifdef __APPLE__
++    if (addrs) freeifaddrs( addrs );
++#endif
+     if_freenameindex( indices );
+     return append_count;
+ }
+diff --git a/dlls/nsiproxy.sys/unix_private.h b/dlls/nsiproxy.sys/unix_private.h
+index 7205550..cfa9d90 100644
+--- a/dlls/nsiproxy.sys/unix_private.h
++++ b/dlls/nsiproxy.sys/unix_private.h
+@@ -59,6 +59,10 @@ static inline NTSTATUS nsi_enumerate_all( UINT unk, UINT unk2, const NPI_MODULEI
+ 
+ BOOL convert_luid_to_unix_name( const NET_LUID *luid, const char **unix_name );
+ BOOL convert_unix_name_to_luid( const char *unix_name, NET_LUID *luid );
++#ifdef __APPLE__
++struct ifaddrs;
++BOOL ambre_hidden_interface( const char *name, struct ifaddrs *addrs );
++#endif
+ 
+ static inline BOOL convert_luid_to_index( const NET_LUID *luid, UINT *index )
+ {

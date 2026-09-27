@@ -55,6 +55,7 @@ plutil -extract CFBundleIdentifier raw "Libraries/Allia Jeu.app/Contents/Info.pl
 LC_ALL=C grep -aqF AMBRE_WINELOADER "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0002 absent de ntdll.so"
 LC_ALL=C grep -aqF AMBRE_GAME_BUNDLES "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0003 absent de ntdll.so"
 LC_ALL=C grep -aqF AMBRE_GAME_PROCESS "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0005 absent de ntdll.so"
+LC_ALL=C grep -aqF anpi "${W}/lib/wine/x86_64-unix/nsiproxy.so" || bad "correctif 0006 absent de nsiproxy.so"
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
