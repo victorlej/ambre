@@ -20,14 +20,16 @@ index 003c191..bda1122 100644
    }
    
 diff --git a/src/dxvk/hud/dxvk_hud_item.cpp b/src/dxvk/hud/dxvk_hud_item.cpp
-index 5dfb7fa..5a96322 100644
+index 5dfb7fa..417d32b 100644
 --- a/src/dxvk/hud/dxvk_hud_item.cpp
 +++ b/src/dxvk/hud/dxvk_hud_item.cpp
-@@ -1,6 +1,11 @@
+@@ -1,6 +1,13 @@
  #include "dxvk_hud_item.h"
  
 +#include <algorithm>
 +#include <cstdio>
++#include <cstdlib>
++#include <cstring>
  #include <iomanip>
 +#include <windows.h>
 +
@@ -35,7 +37,7 @@ index 5dfb7fa..5a96322 100644
  #include <version.h>
  
  namespace dxvk::hud {
-@@ -83,6 +88,159 @@ namespace dxvk::hud {
+@@ -83,6 +90,198 @@ namespace dxvk::hud {
    }
  
  
@@ -154,25 +156,64 @@ index 5dfb7fa..5a96322 100644
 +  HudCpuItem::~HudCpuItem() { }
 +
 +
++  /* Chiffres d'Allia (mesurés par macOS) : C:\\ProgramData\\Allia\\perf.txt, réécrit chaque
++   * seconde pendant la partie. Pris seulement s'il date de moins de 3 s. */
++  static bool ambreReadAllia(float& cores, float& pshare) {
++    HANDLE file = CreateFileA("C:\\ProgramData\\Allia\\perf.txt", GENERIC_READ,
++      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
++    if (file == INVALID_HANDLE_VALUE)
++      return false;
++    FILETIME written, now;
++    char text[256] = { };
++    DWORD read = 0;
++    bool fresh = GetFileTime(file, nullptr, nullptr, &written)
++      && ReadFile(file, text, sizeof(text) - 1, &read, nullptr);
++    CloseHandle(file);
++    if (!fresh)
++      return false;
++    GetSystemTimeAsFileTime(&now);
++    auto ticks = [] (const FILETIME& ft) { return (uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime; };
++    if (ticks(now) > ticks(written) + 30000000ull) // 3 s
++      return false;
++    const char* c = strstr(text, "cores=");
++    if (!c)
++      return false;
++    cores = float(atof(c + 6));
++    const char* p = strstr(text, "pshare=");
++    pshare = p ? float(atof(p + 7)) : -1.0f;
++    return true;
++  }
++
++
 +  void HudCpuItem::update(dxvk::high_resolution_clock::time_point time) {
 +    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
 +
 +    if (elapsed.count() < UpdateInterval)
 +      return;
 +
-+    FILETIME created, exited, kernel, user;
++    float cores = 0.0f, pshare = -1.0f;
 +
-+    if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
-+      auto toUs = [] (const FILETIME& ft) {
-+        return ((uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime) / 10;
-+      };
++    if (ambreReadAllia(cores, pshare)) {
++      // En cœurs (1 = un cœur plein), et la part sur les cœurs performants.
++      m_load = ambreFormat(cores, 1) + " coeurs";
++      if (pshare >= 0.0f)
++        m_load += "  P " + ambreFormat(100.0f * pshare, 0) + " %";
++    } else {
++      // Sans Allia : temps processeur vu par Wine (approximatif sur Mac).
++      FILETIME created, exited, kernel, user;
 +
-+      uint64_t cpu = toUs(kernel) + toUs(user);
++      if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
++        auto toUs = [] (const FILETIME& ft) {
++          return ((uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime) / 10;
++        };
 +
-+      if (m_lastCpu)
-+        m_load = ambreFormat(100.0f * float(cpu - m_lastCpu) / float(elapsed.count()), 0) + " %";
++        uint64_t cpu = toUs(kernel) + toUs(user);
 +
-+      m_lastCpu = cpu;
++        if (m_lastCpu)
++          m_load = ambreFormat(float(cpu - m_lastCpu) / float(elapsed.count()), 1) + " coeurs ~";
++
++        m_lastCpu = cpu;
++      }
 +    }
 +
 +    m_lastUpdate = time;

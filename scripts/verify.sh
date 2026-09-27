@@ -53,6 +53,7 @@ vb="$(WINEPREFIX="${PWD}/verify-prefix" WINEDEBUG=-all AMBRE_WINELOADER="${PWD}/
 [ "${vb}" = "${v}" ] || bad "version différente par le paquet : ${vb}"
 plutil -extract CFBundleIdentifier raw "Libraries/Allia Jeu.app/Contents/Info.plist" | grep -qx app.allia.game || bad "identifiant du paquet"
 LC_ALL=C grep -aqF AMBRE_WINELOADER "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0002 absent de ntdll.so"
+LC_ALL=C grep -aqF AMBRE_GAME_BUNDLES "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0003 absent de ntdll.so"
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
