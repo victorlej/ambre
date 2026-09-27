@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-27",
+  "updated": "2026-09-27b",
   "games": {
     "489830": {
       "level": "optimized",
@@ -12,11 +12,12 @@
       "issues": ["En extérieur aux réglages Ultra, la puce graphique sature : 45 à 55 images par seconde. Amélioration prévue avec Ambre 2.0 (traduction directe vers Metal)."]
     },
     "945360": {
-      "level": "works",
-      "summary": "Parties en ligne vérifiées.",
-      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
-      "settings": ["DXVK", "Jeu Unity : DirectX 11 forcé (automatique)"],
-      "notes": ["Mesures de performance à faire avant de viser « Optimisé pour Allia »."]
+      "level": "optimized",
+      "summary": "Tourne à 60 images par seconde, sans effort pour la puce (graphique à 20 %). Parties en ligne vérifiées.",
+      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-27" },
+      "settings": ["DXVK", "Jeu Unity : DirectX 11 forcé (automatique)", "Mode Jeu"],
+      "stats": { "fps": 61.1, "low": 48.4, "steadiness": 0.96, "stutters": "1 saccade en 3 minutes (au chargement)", "gpu": 0.2, "cpu": 0.6, "pShare": 0.92, "quality": "Réglages du jeu par défaut" },
+      "notes": ["Mesuré sur une partie de 3 minutes. Les menus montent jusqu'à 144 images par seconde.", "Manette : à confirmer lors d'une prochaine partie."]
     },
     "4001890": {
       "level": "broken",
