@@ -1,0 +1,305 @@
+diff --git a/src/dxvk/hud/dxvk_hud.cpp b/src/dxvk/hud/dxvk_hud.cpp
+index 003c191..bda1122 100644
+--- a/src/dxvk/hud/dxvk_hud.cpp
++++ b/src/dxvk/hud/dxvk_hud.cpp
+@@ -35,6 +35,8 @@ namespace dxvk::hud {
+                                 | VK_COLOR_COMPONENT_B_BIT
+                                 | VK_COLOR_COMPONENT_A_BIT;
+ 
++    addItem<HudAmbreItem>("ambre", -1);
++    addItem<HudFrameStatsItem>("lows", -1);
+     addItem<HudVersionItem>("version", -1);
+     addItem<HudDeviceInfoItem>("devinfo", -1, m_device);
+     addItem<HudFpsItem>("fps", -1);
+@@ -45,6 +47,7 @@ namespace dxvk::hud {
+     addItem<HudMemoryStatsItem>("memory", -1, device);
+     addItem<HudCsThreadItem>("cs", -1, device);
+     addItem<HudGpuLoadItem>("gpuload", -1, device);
++    addItem<HudCpuItem>("cpu", -1);
+     addItem<HudCompilerActivityItem>("compiler", -1, device);
+   }
+   
+diff --git a/src/dxvk/hud/dxvk_hud_item.cpp b/src/dxvk/hud/dxvk_hud_item.cpp
+index 5dfb7fa..5a96322 100644
+--- a/src/dxvk/hud/dxvk_hud_item.cpp
++++ b/src/dxvk/hud/dxvk_hud_item.cpp
+@@ -1,6 +1,11 @@
+ #include "dxvk_hud_item.h"
+ 
++#include <algorithm>
++#include <cstdio>
+ #include <iomanip>
++#include <windows.h>
++
++#include "../../util/util_env.h"
+ #include <version.h>
+ 
+ namespace dxvk::hud {
+@@ -83,6 +88,159 @@ namespace dxvk::hud {
+   }
+ 
+ 
++  // --- Ambre -------------------------------------------------------------
++
++  static std::string ambreFormat(float value, int decimals) {
++    char buffer[32];
++    std::snprintf(buffer, sizeof(buffer), decimals ? "%.1f" : "%.0f", value);
++    return buffer;
++  }
++
++
++  HudAmbreItem::HudAmbreItem() {
++    std::string version = env::getEnvVar("AMBRE_VERSION");
++    m_title = version.empty() ? "Ambre" : "Ambre " + version;
++    m_label = env::getEnvVar("AMBRE_HUD_LABEL");
++    if (m_label.empty())
++      m_label = "DXVK " DXVK_VERSION;
++  }
++
++  HudAmbreItem::~HudAmbreItem() { }
++
++
++  HudPos HudAmbreItem::render(
++          HudRenderer&      renderer,
++          HudPos            position) {
++    position.y += 18.0f;
++    renderer.drawText(18.0f,
++      { position.x, position.y },
++      { 1.0f, 0.72f, 0.25f, 1.0f },
++      m_title);
++
++    position.y += 20.0f;
++    renderer.drawText(14.0f,
++      { position.x, position.y },
++      { 0.85f, 0.8f, 0.95f, 1.0f },
++      m_label);
++
++    position.y += 10.0f;
++    return position;
++  }
++
++
++  HudFrameStatsItem::HudFrameStatsItem() { }
++
++  HudFrameStatsItem::~HudFrameStatsItem() { }
++
++
++  void HudFrameStatsItem::update(dxvk::high_resolution_clock::time_point time) {
++    auto frameUs = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastFrame).count();
++    m_lastFrame = time;
++
++    // Une pause de plus d'une seconde (chargement, jeu en arriere-plan) ne compte pas.
++    if (frameUs > 0 && frameUs < 1'000'000) {
++      m_lastMs = float(frameUs) / 1000.0f;
++      m_frameTimes[m_next] = m_lastMs;
++      m_next = (m_next + 1) % HistorySize;
++      m_count = std::min(m_count + 1, HistorySize);
++    }
++
++    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
++
++    if (elapsed.count() >= UpdateInterval && m_count > 0) {
++      std::vector<float> times(m_frameTimes.begin(), m_frameTimes.begin() + m_count);
++      std::sort(times.begin(), times.end(), std::greater<float>());
++
++      float total = 0.0f;
++      for (float t : times)
++        total += t;
++
++      auto lowFps = [&times] (size_t permille) {
++        size_t n = std::max<size_t>(1, times.size() * permille / 1000);
++        float sum = 0.0f;
++        for (size_t i = 0; i < n; i++)
++          sum += times[i];
++        return 1000.0f * float(n) / sum;
++      };
++
++      m_average = ambreFormat(1000.0f * float(times.size()) / total, 1);
++      m_low1    = ambreFormat(lowFps(10), 1);
++      m_low01   = ambreFormat(lowFps(1), 1);
++      m_frameMs = ambreFormat(m_lastMs, 1);
++      m_lastUpdate = time;
++    }
++  }
++
++
++  HudPos HudFrameStatsItem::render(
++          HudRenderer&      renderer,
++          HudPos            position) {
++    const HudColor label = { 1.0f, 0.72f, 0.25f, 1.0f };
++    const HudColor value = { 1.0f, 1.0f, 1.0f, 1.0f };
++
++    const std::pair<const char*, const std::string*> lines[] = {
++      { "Images/s",       &m_average },
++      { "1% bas",         &m_low1    },
++      { "0,1% bas",       &m_low01   },
++      { "Temps d'image",  &m_frameMs },
++    };
++
++    for (const auto& line : lines) {
++      position.y += 16.0f;
++      renderer.drawText(16.0f, { position.x, position.y }, label, line.first);
++      renderer.drawText(16.0f, { position.x + 150.0f, position.y }, value,
++        line.second == &m_frameMs ? *line.second + " ms" : *line.second);
++      position.y += 4.0f;
++    }
++
++    position.y += 4.0f;
++    return position;
++  }
++
++
++  HudCpuItem::HudCpuItem() { }
++
++  HudCpuItem::~HudCpuItem() { }
++
++
++  void HudCpuItem::update(dxvk::high_resolution_clock::time_point time) {
++    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
++
++    if (elapsed.count() < UpdateInterval)
++      return;
++
++    FILETIME created, exited, kernel, user;
++
++    if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
++      auto toUs = [] (const FILETIME& ft) {
++        return ((uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime) / 10;
++      };
++
++      uint64_t cpu = toUs(kernel) + toUs(user);
++
++      if (m_lastCpu)
++        m_load = ambreFormat(100.0f * float(cpu - m_lastCpu) / float(elapsed.count()), 0) + " %";
++
++      m_lastCpu = cpu;
++    }
++
++    m_lastUpdate = time;
++  }
++
++
++  HudPos HudCpuItem::render(
++          HudRenderer&      renderer,
++          HudPos            position) {
++    position.y += 16.0f;
++    renderer.drawText(16.0f, { position.x, position.y }, { 1.0f, 0.72f, 0.25f, 1.0f }, "Processeur");
++    renderer.drawText(16.0f, { position.x + 150.0f, position.y }, { 1.0f, 1.0f, 1.0f, 1.0f }, m_load);
++    position.y += 8.0f;
++    return position;
++  }
++
++
++  // -----------------------------------------------------------------------
++
+   HudPos HudVersionItem::render(
+           HudRenderer&      renderer,
+           HudPos            position) {
+diff --git a/src/dxvk/hud/dxvk_hud_item.h b/src/dxvk/hud/dxvk_hud_item.h
+index 275461c..e27daa4 100644
+--- a/src/dxvk/hud/dxvk_hud_item.h
++++ b/src/dxvk/hud/dxvk_hud_item.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <array>
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -121,6 +122,96 @@ namespace dxvk::hud {
+   };
+ 
+ 
++  /**
++   * \brief Ambre : nom et version du moteur d'Allia (variables AMBRE_VERSION et
++   *        AMBRE_HUD_LABEL, posees par Allia), en couleur ambre.
++   */
++  class HudAmbreItem : public HudItem {
++
++  public:
++
++    HudAmbreItem();
++
++    ~HudAmbreItem();
++
++    HudPos render(
++            HudRenderer&      renderer,
++            HudPos            position);
++
++  private:
++
++    std::string m_title;
++    std::string m_label;
++
++  };
++
++
++  /**
++   * \brief Ambre : images par seconde moyennes, 1 % et 0,1 % les plus lentes
++   *        (sur les 2000 dernieres images) et temps de la derniere image.
++   */
++  class HudFrameStatsItem : public HudItem {
++    constexpr static int64_t UpdateInterval = 500'000;
++    constexpr static size_t  HistorySize    = 2000;
++  public:
++
++    HudFrameStatsItem();
++
++    ~HudFrameStatsItem();
++
++    void update(dxvk::high_resolution_clock::time_point time);
++
++    HudPos render(
++            HudRenderer&      renderer,
++            HudPos            position);
++
++  private:
++
++    dxvk::high_resolution_clock::time_point m_lastFrame
++      = dxvk::high_resolution_clock::now();
++    dxvk::high_resolution_clock::time_point m_lastUpdate
++      = dxvk::high_resolution_clock::now();
++
++    std::array<float, HistorySize> m_frameTimes = {};
++    size_t                         m_count      = 0;
++    size_t                         m_next       = 0;
++    float                          m_lastMs     = 0.0f;
++
++    std::string m_average = "-";
++    std::string m_low1    = "-";
++    std::string m_low01   = "-";
++    std::string m_frameMs = "-";
++
++  };
++
++
++  /**
++   * \brief Ambre : charge processeur du jeu (en % d'un coeur).
++   */
++  class HudCpuItem : public HudItem {
++    constexpr static int64_t UpdateInterval = 1'000'000;
++  public:
++
++    HudCpuItem();
++
++    ~HudCpuItem();
++
++    void update(dxvk::high_resolution_clock::time_point time);
++
++    HudPos render(
++            HudRenderer&      renderer,
++            HudPos            position);
++
++  private:
++
++    dxvk::high_resolution_clock::time_point m_lastUpdate
++      = dxvk::high_resolution_clock::now();
++    uint64_t    m_lastCpu = 0;
++    std::string m_load    = "-";
++
++  };
++
++
+   /**
+    * \brief HUD item to display DXVK version
+    */

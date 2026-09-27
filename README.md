@@ -8,7 +8,7 @@ En grec ancien, *ēlektron* désignait à la fois l'ambre et l'électrum, l'alli
 
 - **Wine** : le code de CrossOver 26.3 reporté sur Wine 11.17, à partir de la branche `wine1117` de [dappermint/winecx](https://github.com/dappermint/winecx), commit indiqué dans `WINECX_COMMIT`.
 - **Les correctifs d'Ambre** : `patches/`, appliqués dans l'ordre.
-- **Graphismes** : [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) 1.10.3, [DXMT](https://github.com/3Shain/dxmt) 0.80, [MoltenVK](https://github.com/KhronosGroup/MoltenVK) 1.4.2.
+- **Graphismes** : [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) 1.10.3 (compilé par Ambre, avec son compteur), [DXMT](https://github.com/3Shain/dxmt) 0.80, [MoltenVK](https://github.com/KhronosGroup/MoltenVK) 1.4.2.
 - **wine-mono** et **wine-gecko**, aux versions demandées par le code de Wine.
 
 Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibliothèques tierces (freetype, gnutls, ffmpeg, gstreamer…) viennent d'une version figée de nixpkgs.
@@ -18,6 +18,7 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | Correctif | Pourquoi |
 |---|---|
 | `0001-identite-de-jeu.patch` | Le chargeur se déclare comme un jeu (`app.allia.game`, catégorie jeux, `GCSupportsGameMode`) : macOS active le Mode Jeu. |
+| `dxvk/patches/0001-compteur-ambre.patch` | Compteur d'images d'Ambre dans DXVK (`DXVK_HUD=ambre,lows,cpu,…`) : nom et version du moteur, images/s moyennes, 1 % et 0,1 % les plus lentes, temps d'image, charge du processeur. |
 
 ## Jeux certifiés
 
