@@ -82,24 +82,32 @@ while [ -n "${queue// /}" ]; do
     for l in ${next}; do [ -e "${LIBDIR}/$(basename "${l}")" ] || queue="${queue} ${l}"; done
 done
 
+# Un seul appel à install_name_tool par fichier (un appel par lien prenait 40 min sur ~700
+# fichiers), et tous les cœurs en parallèle.
 fixup() {
-    local f="$1" rel ref
+    local f="$1" rel ref args=() uses_system_iconv=0
     rel="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' "${LIBDIR}" "${f}")"
     chmod u+w "${f}" 2>/dev/null || true
-    case "${f}" in *.dylib*) install_name_tool -id "@loader_path/$(basename "${f}")" "${f}" 2>/dev/null || true ;; esac
+    case "${f}" in *.dylib*) args+=(-id "@loader_path/$(basename "${f}")") ;; esac
+    # Deux iconv différents : _iconv vient de macOS, _libiconv de nix.
+    nm -u "${f}" 2>/dev/null | grep -q '^ *_iconv$' && uses_system_iconv=1
     for ref in $(scan "${f}"); do
-        # Deux iconv différents : _iconv vient de macOS, _libiconv de nix.
-        if [[ "$(basename "${ref}")" == libiconv*.dylib ]] && nm -u "${f}" 2>/dev/null | grep -q '^ *_iconv$'; then
-            install_name_tool -change "${ref}" /usr/lib/libiconv.2.dylib "${f}" 2>/dev/null || true
+        if [[ "$(basename "${ref}")" == libiconv*.dylib ]] && [ "${uses_system_iconv}" = 1 ]; then
+            args+=(-change "${ref}" /usr/lib/libiconv.2.dylib)
         else
-            install_name_tool -change "${ref}" "@loader_path/${rel}/$(basename "${ref}")" "${f}" 2>/dev/null || true
+            args+=(-change "${ref}" "@loader_path/${rel}/$(basename "${ref}")")
         fi
     done
+    [ "${#args[@]}" -gt 0 ] && install_name_tool "${args[@]}" "${f}" 2>/dev/null || true
     codesign -f -s - "${f}" 2>/dev/null || true
 }
-for f in "${LIBDIR}"/*.dylib* "${LIBDIR}"/gstreamer-1.0/*.dylib*; do [ -f "${f}" ] && fixup "${f}"; done
-find Libraries/Wine/bin -type f | while read -r f; do fixup "${f}"; done
-find Libraries/Wine/lib/wine -name '*.so' | while read -r f; do fixup "${f}"; done
+export -f fixup scan
+export LIBDIR
+{
+    for f in "${LIBDIR}"/*.dylib* "${LIBDIR}"/gstreamer-1.0/*.dylib*; do [ -f "${f}" ] && printf '%s\0' "${f}"; done
+    find Libraries/Wine/bin -type f -print0
+    find Libraries/Wine/lib/wine -name '*.so' -print0
+} | xargs -0 -P "$(sysctl -n hw.logicalcpu)" -n 1 bash -c 'fixup "$1"' _
 
 echo "== identité de jeu du chargeur (Mode Jeu : macOS lit la signature)"
 codesign --force --sign - --identifier app.allia.game "${loader}"

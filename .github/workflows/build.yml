@@ -56,7 +56,7 @@ jobs:
           mkdir -p dxvk-out
           bash dxvk-src/package-release.sh "$DXVK_VERSION-ambre" "$PWD/dxvk-out" --no-package
           ls -R dxvk-out | head -20
-          strings dxvk-out/*/x64/d3d11.dll | grep -q AMBRE_VERSION || { echo "::error::compteur Ambre absent de d3d11.dll"; exit 1; }
+          LC_ALL=C grep -aqF AMBRE_VERSION dxvk-out/*/x64/d3d11.dll || { echo "::error::compteur Ambre absent de d3d11.dll"; exit 1; }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ambre-dxvk
