@@ -63,25 +63,26 @@ done < store-outs.txt
 cp payload/libMoltenVK.dylib "${LIBDIR}/libMoltenVK.dylib"; chmod u+w "${LIBDIR}/libMoltenVK.dylib"
 
 echo "   $(date +%T) gstreamer copié, recherche des dépendances"
-# Chargées par leur nom (dlopen), donc invisibles dans les dépendances : à nommer.
-queue=""
+# Dépendances à copier, dans un fichier (une longue chaîne de ~3 500 chemins prenait 40 min au
+# bash 3.2 de macOS). Chargées par leur nom (dlopen), freetype et gnutls sont à nommer.
+: > deps.txt
 while read -r d; do
-    for so in libfreetype.6.dylib libgnutls.30.dylib; do [ -f "${d}/lib/${so}" ] && queue="${queue} ${d}/lib/${so}"; done
+    for so in libfreetype.6.dylib libgnutls.30.dylib; do [ -f "${d}/lib/${so}" ] && echo "${d}/lib/${so}" >> deps.txt; done
 done < store-outs.txt
 for f in Libraries/Wine/lib/wine/*-unix/*.so "${LIBDIR}"/gstreamer-1.0/*.dylib; do
-    [ -f "${f}" ] && queue="${queue} $(scan "${f}" | tr '\n' ' ')"
+    [ -f "${f}" ] && scan "${f}" >> deps.txt
 done
-while [ -n "${queue// /}" ]; do
-    next=""
-    for lib in ${queue}; do
+while [ -s deps.txt ]; do
+    sort -u deps.txt > deps-round.txt
+    : > deps.txt
+    while read -r lib; do
         base="$(basename "${lib}")"
         [ -e "${LIBDIR}/${base}" ] && continue
         cp -L "${lib}" "${LIBDIR}/${base}"; chmod u+w "${LIBDIR}/${base}"
-        next="${next} $(scan "${LIBDIR}/${base}" | tr '\n' ' ')"
-    done
-    queue=""
-    for l in ${next}; do [ -e "${LIBDIR}/$(basename "${l}")" ] || queue="${queue} ${l}"; done
+        scan "${LIBDIR}/${base}" >> deps.txt
+    done < deps-round.txt
 done
+rm -f deps.txt deps-round.txt
 
 echo "   $(date +%T) $(ls "${LIBDIR}" | wc -l) bibliothèques copiées, réécriture des liens"
 # Un seul appel à install_name_tool par fichier (un appel par lien prenait 40 min sur ~700

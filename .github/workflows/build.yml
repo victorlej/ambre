@@ -10,6 +10,10 @@ on:
         type: choice
         options: [normal, release, fast]
         default: normal
+      version:
+        description: "Numéro de version d'Ambre (vide = 0.0.<n>-test)"
+        type: string
+        default: ""
   push:
     tags: ["v*"]
 
@@ -217,7 +221,9 @@ jobs:
         timeout-minutes: 15
         run: |
           export PATH="$NIX_TOOL_PATH$PATH"
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.${GITHUB_RUN_NUMBER}-test"; fi
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then version="${{ inputs.version }}"
+          else version="0.0.${GITHUB_RUN_NUMBER}-test"; fi
           # Mouchard : ce qui tourne toutes les 30 s (l'assemblage a déjà pris 40 min sans rien dire).
           ( while sleep 30; do echo "--- $(date +%T) en cours :"; ps -Ao etime=,pcpu=,command= | grep -vE ' (ps|sleep|grep) ' | sort -k2 -rn | head -4 | cut -c1-200; done ) &
           spy=$!
