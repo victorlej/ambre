@@ -1,0 +1,57 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 373d6b7..bd8c8d5 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -679,14 +679,52 @@ static void preloader_exec( char **argv, const char *image_path )
+ }
+ 
+ /* exec the appropriate wine loader for the specified machine */
++/* Ambre : chaque jeu sous son nom dans le Dock. Allia crée pour chaque programme de jeu un lien
++ * AMBRE_GAME_BUNDLES/<programme en minuscules, sans .exe> vers « <Nom du jeu>.app/Contents/MacOS/wine »
++ * (un paquet .app avec la jaquette pour icône, déclaré comme jeu). macOS nomme le programme
++ * d'après le chemin utilisé pour le lancer : on suit ce premier lien, sans résoudre le suivant
++ * (qui mène au vrai chargeur). Sinon : le chargeur habituel (AMBRE_WINELOADER). */
++static char *ambre_game_loader( const char *image_path )
++{
++    const char *dir = getenv( "AMBRE_GAME_BUNDLES" );
++    const char *name, *p;
++    char key[256], link[PATH_MAX], target[PATH_MAX], *path;
++    size_t i, len;
++    ssize_t n;
++
++    if (!dir || dir[0] != '/' || !image_path) return NULL;
++    /* Chemin Windows (« C:\...\SkyrimSE.exe ») ou Unix : on garde le nom du programme. */
++    for (name = p = image_path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    len = strlen( name );
++    if (len > 4 && name[len - 4] == '.' && (name[len - 3] | 0x20) == 'e' &&
++        (name[len - 2] | 0x20) == 'x' && (name[len - 1] | 0x20) == 'e') len -= 4;
++    if (!len || len >= sizeof(key)) return NULL;
++    for (i = 0; i < len; i++) key[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
++    key[len] = 0;
++    if (snprintf( link, sizeof(link), "%s/%s", dir, key ) >= (int)sizeof(link)) return NULL;
++    if ((n = readlink( link, target, sizeof(target) - 1 )) <= 0) return NULL;
++    target[n] = 0;
++    if (!(path = malloc( strlen( dir ) + n + 2 ))) return NULL;
++    if (target[0] == '/') strcpy( path, target );
++    else sprintf( path, "%s/%s", dir, target );
++    if (access( path, X_OK )) { free( path ); return NULL; }
++    return path;
++}
++
+ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )
+ {
+     static char noexec[] = "WINELOADERNOEXEC=1";
++    char *game_loader;
+ 
+     putenv( noexec );
+ 
+     if (((argv[1] = get_alternate_wineloader( machine )))) preloader_exec( argv, image_path );
+ 
++    if ((game_loader = ambre_game_loader( image_path )))
++    {
++        argv[1] = game_loader;
++        preloader_exec( argv, image_path );
++    }
+     argv[1] = strdup( wineloader );
+     preloader_exec( argv, image_path );
+     return STATUS_INVALID_IMAGE_FORMAT;

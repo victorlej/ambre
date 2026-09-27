@@ -170,6 +170,8 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>hud</key><true/>
   <key>frameGeneration</key><false/>
   <key>gameBundle</key><true/>
+  <key>gameDock</key><true/>
+  <key>hudBridge</key><true/>
 </dict>
 </plist>
 PLIST
