@@ -9,7 +9,7 @@ bad() { echo "::error::$*"; fail=1; }
 
 echo "== 1. déplaçable : aucune référence au dossier de compilation (/nix/store, /opt/ambre)"
 while IFS= read -r f; do
-    file -b "${f}" | grep -q Mach-O || continue
+    case "$(file -b "${f}")" in *Mach-O*) ;; *) continue ;; esac
     refs="$(otool -L "${f}" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^/(nix|opt|Users|private|tmp)' || true)"
     [ -n "${refs}" ] && bad "${f} dépend de ${refs}"
     id="$(otool -D "${f}" 2>/dev/null | tail -n +2 | grep -E '^/(nix|opt)' || true)"
@@ -35,8 +35,8 @@ size="$(stat -f %z "${W}/lib/wine/x86_64-windows/ntdll.dll")"
 [ "${size}" -lt 1500000 ] || bad "ntdll.dll pèse ${size} octets : pas allégé"
 
 echo "== 6. identité de jeu (Mode Jeu)"
-codesign -dvvv "${W}/lib/wine/x86_64-unix/wine" 2>&1 | grep -q 'Identifier=app.allia.game' || bad "chargeur non signé app.allia.game"
-strings "${W}/lib/wine/x86_64-unix/wine" | grep -q 'public.app-category.games' || bad "catégorie jeux absente du chargeur"
+codesign -dvvv "${W}/lib/wine/x86_64-unix/wine" 2>&1 | grep -c 'Identifier=app.allia.game' >/dev/null || bad "chargeur non signé app.allia.game"
+LC_ALL=C grep -aqF 'public.app-category.games' "${W}/lib/wine/x86_64-unix/wine" || bad "catégorie jeux absente du chargeur"
 
 echo "== 6b. paquet « Allia Jeu.app » : Wine démarre par ce chemin, correctif 0002 présent"
 bundle="Libraries/Allia Jeu.app/Contents/MacOS/wine"
@@ -45,12 +45,12 @@ vb="$(WINEPREFIX="${PWD}/verify-prefix" WINEDEBUG=-all AMBRE_WINELOADER="${PWD}/
     || bad "wine --version par le paquet a échoué : ${vb}"
 [ "${vb}" = "${v}" ] || bad "version différente par le paquet : ${vb}"
 plutil -extract CFBundleIdentifier raw "Libraries/Allia Jeu.app/Contents/Info.plist" | grep -qx app.allia.game || bad "identifiant du paquet"
-strings "${W}/lib/wine/x86_64-unix/ntdll.so" | grep -q AMBRE_WINELOADER || bad "correctif 0002 absent de ntdll.so"
+LC_ALL=C grep -aqF AMBRE_WINELOADER "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0002 absent de ntdll.so"
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
-strings Libraries/DXVK/x64/d3d11.dll | grep -q AMBRE_VERSION || bad "compteur Ambre absent de DXVK (x64)"
-strings Libraries/DXVK/x32/d3d11.dll | grep -q AMBRE_VERSION || bad "compteur Ambre absent de DXVK (x32)"
+LC_ALL=C grep -aqF AMBRE_VERSION Libraries/DXVK/x64/d3d11.dll || bad "compteur Ambre absent de DXVK (x64)"
+LC_ALL=C grep -aqF AMBRE_VERSION Libraries/DXVK/x32/d3d11.dll || bad "compteur Ambre absent de DXVK (x32)"
 [ -f Libraries/DXMT/x64/d3d11.dll ] || bad "DXMT absent"
 [ -f "${W}/lib/libMoltenVK.dylib" ] || bad "MoltenVK absent"
 
