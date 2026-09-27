@@ -12,7 +12,7 @@ PREFIX=/opt/ambre
 ROOT="$PWD"
 LIBDIR="${ROOT}/Libraries/Wine/lib"
 
-echo "== installation"
+echo "== $(date +%T) installation"
 rm -rf staging Libraries
 # install-lib : seulement ce qu'il faut pour faire tourner des programmes (pas les bibliothèques
 # d'import, qui prendraient des centaines de Mo pour rien).
@@ -22,7 +22,7 @@ cp -R addons/mono/. "staging${PREFIX}/share/wine/mono/"
 cp -R addons/gecko/. "staging${PREFIX}/share/wine/gecko/"
 for d in bin lib share; do cp -R "staging${PREFIX}/${d}" "Libraries/Wine/${d}"; done
 
-echo "== DXMT (seulement le pont winemetal dans Wine) et composants par bouteille"
+echo "== $(date +%T) DXMT (seulement le pont winemetal dans Wine) et composants par bouteille"
 dxmt="payload/v${DXMT_VERSION}"
 cp -R "${dxmt}/x86_64-unix/." Libraries/Wine/lib/wine/x86_64-unix/
 cp "${dxmt}/x86_64-windows/winemetal.dll" Libraries/Wine/lib/wine/x86_64-windows/
@@ -39,18 +39,18 @@ fi
 cp -R "${dxmt}/x86_64-windows" Libraries/DXMT/x64
 cp -R "${dxmt}/i386-windows" Libraries/DXMT/x32
 
-echo "== nettoyage de la partie Windows (bibliothèques d'import, informations de débogage)"
+echo "== $(date +%T) nettoyage de la partie Windows (bibliothèques d'import, informations de débogage)"
 find Libraries/Wine/lib/wine/*-windows -name '*.a' -delete
 find Libraries/Wine/lib/wine/*-windows -type f -print0 \
     | xargs -0 -P "$(sysctl -n hw.logicalcpu)" -n 64 x86_64-w64-mingw32-strip --strip-debug 2>/dev/null || true
 
-echo "== chargeur"
+echo "== $(date +%T) chargeur"
 # Wine 11 range le chargeur à côté de ntdll.so ; bin/ n'en garde que des liens (Allia lance bin/wine).
 loader=Libraries/Wine/lib/wine/x86_64-unix/wine
 [ -x "${loader}" ] || { echo "::error::pas de chargeur dans ${loader}"; exit 1; }
 for n in wine wine64 wineloader; do ln -sf ../lib/wine/x86_64-unix/wine "Libraries/Wine/bin/${n}"; done
 
-echo "== bibliothèques tierces : copiées dans Wine/lib, références rendues relatives"
+echo "== $(date +%T) bibliothèques tierces : copiées dans Wine/lib, références rendues relatives"
 scan() { otool -L "$1" 2>/dev/null | awk '/\/nix\/store/{print $1}'; }
 mkdir -p "${LIBDIR}/gstreamer-1.0"
 while read -r d; do
@@ -62,6 +62,7 @@ while read -r d; do
 done < store-outs.txt
 cp payload/libMoltenVK.dylib "${LIBDIR}/libMoltenVK.dylib"; chmod u+w "${LIBDIR}/libMoltenVK.dylib"
 
+echo "   $(date +%T) gstreamer copié, recherche des dépendances"
 # Chargées par leur nom (dlopen), donc invisibles dans les dépendances : à nommer.
 queue=""
 while read -r d; do
@@ -82,6 +83,7 @@ while [ -n "${queue// /}" ]; do
     for l in ${next}; do [ -e "${LIBDIR}/$(basename "${l}")" ] || queue="${queue} ${l}"; done
 done
 
+echo "   $(date +%T) $(ls "${LIBDIR}" | wc -l) bibliothèques copiées, réécriture des liens"
 # Un seul appel à install_name_tool par fichier (un appel par lien prenait 40 min sur ~700
 # fichiers), et tous les cœurs en parallèle.
 fixup() {
@@ -109,11 +111,11 @@ export LIBDIR
     find Libraries/Wine/lib/wine -name '*.so' -print0
 } | xargs -0 -P "$(sysctl -n hw.logicalcpu)" -n 1 bash -c 'fixup "$1"' _
 
-echo "== identité de jeu du chargeur (Mode Jeu : macOS lit la signature)"
+echo "== $(date +%T) identité de jeu du chargeur (Mode Jeu : macOS lit la signature)"
 codesign --force --sign - --identifier app.allia.game "${loader}"
 codesign -dvvv "${loader}" 2>&1 | grep -E 'Identifier|Info.plist'
 
-echo "== paquet « Allia Jeu.app » (Mode Jeu pour le programme du jeu)"
+echo "== $(date +%T) paquet « Allia Jeu.app » (Mode Jeu pour le programme du jeu)"
 # macOS rattache un programme à l'app dont il est l'exécutable principal (Contents/MacOS/<nom>),
 # d'après le chemin utilisé pour le lancer, même si c'est un lien. Allia lance Wine par ce lien et
 # pose AMBRE_WINELOADER (correctif 0002) pour que Wine lance aussi les jeux par ce chemin :
@@ -142,7 +144,7 @@ cat > "${game}/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "== version"
+echo "== $(date +%T) version"
 cat > Libraries/AmbreVersion.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -162,7 +164,7 @@ cat > Libraries/AmbreVersion.plist <<PLIST
 PLIST
 cat Libraries/AmbreVersion.plist
 
-echo "== archive"
+echo "== $(date +%T) archive"
 tar -czf Libraries.tar.gz Libraries
 shasum -a 256 Libraries.tar.gz | tee Libraries.tar.gz.sha256
 du -sh Libraries Libraries.tar.gz
