@@ -148,6 +148,7 @@ cat > "${game}/Info.plist" <<PLIST
   <key>GCSupportsGameMode</key><true/>
   <key>LSSupportsGameMode</key><true/>
   <key>LSUIElement</key><true/>
+  <key>NSAppSleepDisabled</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
