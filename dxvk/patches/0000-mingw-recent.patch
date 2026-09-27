@@ -1,0 +1,23 @@
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+index 8762265..694d0fb 100644
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -79,10 +79,14 @@
+ 
+ // MinGW headers are broken. Who'dve guessed?
+ #ifndef _MSC_VER
+-typedef struct _D3DDEVINFO_RESOURCEMANAGER
+-{
+-  char dummy;
+-} D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
++// Ambre : les en-têtes mingw récents (12+) définissent déjà cette structure ; comme DXVK 2.x,
++// on range la nôtre dans l'espace de noms dxvk pour éviter le doublon.
++namespace dxvk {
++  typedef struct _D3DDEVINFO_RESOURCEMANAGER
++  {
++    char dummy;
++  } D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
++}
+ 
+ #ifndef __WINE__
+ extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
