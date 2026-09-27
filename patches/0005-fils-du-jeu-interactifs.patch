@@ -1,0 +1,88 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index bd8c8d5..84db441 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -66,6 +66,7 @@
+ # undef LoadResource
+ # undef GetCurrentThread
+ # include <pthread.h>
++# include <pthread/qos.h>
+ # include <mach/mach.h>
+ # include <mach/mach_error.h>
+ # include <mach-o/getsect.h>
+@@ -722,6 +723,10 @@ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )
+ 
+     if ((game_loader = ambre_game_loader( image_path )))
+     {
++        /* Ambre : ce processus est un jeu (ses fils passent en priorité interactive, voir
++         * ambre_game_process dans thread.c). */
++        static char game_process[] = "AMBRE_GAME_PROCESS=1";
++        putenv( game_process );
+         argv[1] = game_loader;
+         preloader_exec( argv, image_path );
+     }
+@@ -2342,6 +2347,7 @@ static void apple_create_wine_thread( void *arg )
+ 
+     pthread_attr_init( &attr );
+     pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
++    if (ambre_game_process()) pthread_attr_set_qos_class_np( &attr, QOS_CLASS_USER_INTERACTIVE, 0 );
+     if (pthread_create( &thread, &attr, apple_wine_thread, NULL )) exit(1);
+     pthread_attr_destroy( &attr );
+ }
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 6599635..95a46de 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -65,6 +65,7 @@
+ #ifdef __APPLE__
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <mach/mach.h>
++#include <pthread/qos.h>
+ #endif
+ #ifdef __FreeBSD__
+ #include <sys/thr.h>
+@@ -1329,6 +1330,22 @@ static NTSTATUS create_server_thread( HANDLE *handle, struct thread_data **data_
+ }
+ 
+ 
++/***********************************************************************
++ *           ambre_game_process
++ *
++ * Ambre : vrai si ce processus est un jeu lancé par Allia (AMBRE_GAME_PROCESS, posé au
++ * lancement par le lien du jeu, voir loader_exec). Ses fils sont alors créés en priorité
++ * « interactive » (QOS_CLASS_USER_INTERACTIVE) : macOS les garde sur les cœurs performants
++ * et monte leur fréquence plus vite, comme pour l'app au premier plan.
++ */
++int ambre_game_process(void)
++{
++    static int cached = -1;
++    if (cached < 0) cached = getenv( "AMBRE_GAME_PROCESS" ) != NULL;
++    return cached;
++}
++
++
+ /***********************************************************************
+  *           spawn_thread
+  */
+@@ -1344,6 +1361,9 @@ static NTSTATUS spawn_thread( struct thread_data *data )
+     pthread_attr_setstack( &attr, get_kernel_stack( data ), kernel_stack_size );
+     pthread_attr_setguardsize( &attr, 0 );
+     pthread_attr_setscope( &attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
++#ifdef __APPLE__
++    if (ambre_game_process()) pthread_attr_set_qos_class_np( &attr, QOS_CLASS_USER_INTERACTIVE, 0 );
++#endif
+     InterlockedIncrement( &nb_threads );
+     if (pthread_create( &pthread_id, &attr, (void * (*)(void *))server_init_thread, data ))
+     {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 735d776..471fc2d 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -261,6 +261,7 @@ extern void process_exit_wrapper( int status ) DECLSPEC_NORETURN;
+ extern size_t server_init_process(void);
+ extern void server_init_process_done(void);
+ extern void server_init_thread( struct thread_data *data );
++extern int ambre_game_process(void);
+ extern int server_pipe( int fd[2] );
+ 
+ extern void fpux_to_fpu( I386_FLOATING_SAVE_AREA *fpu, const XSAVE_FORMAT *fpux );

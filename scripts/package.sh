@@ -172,6 +172,10 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>gameBundle</key><true/>
   <key>gameDock</key><true/>
   <key>hudBridge</key><true/>
+  <key>hudPanel</key><true/>
+  <key>frameLog</key><true/>
+  <key>gameQoS</key><true/>
+  <key>pipelineCache</key><true/>
 </dict>
 </plist>
 PLIST
