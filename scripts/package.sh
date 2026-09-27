@@ -28,7 +28,14 @@ cp -R "${dxmt}/x86_64-unix/." Libraries/Wine/lib/wine/x86_64-unix/
 cp "${dxmt}/x86_64-windows/winemetal.dll" Libraries/Wine/lib/wine/x86_64-windows/
 [ -f "${dxmt}/i386-windows/winemetal.dll" ] && cp "${dxmt}/i386-windows/winemetal.dll" Libraries/Wine/lib/wine/i386-windows/
 mkdir -p Libraries/DXVK Libraries/DXMT
-cp -R "payload/dxvk-macOS-async-v${DXVK_VERSION}-20230507-repack/." Libraries/DXVK/
+# DXVK compilé par Ambre (compteur Ambre) s'il est là, sinon celui de Gcenx.
+if ls dxvk-build/*/x64/d3d11.dll >/dev/null 2>&1; then
+    cp -R dxvk-build/*/. Libraries/DXVK/
+    echo "DXVK : compilé par Ambre"
+else
+    cp -R "payload/dxvk-macOS-async-v${DXVK_VERSION}-20230507-repack/." Libraries/DXVK/
+    echo "DXVK : Gcenx (sans compteur Ambre)"
+fi
 cp -R "${dxmt}/x86_64-windows" Libraries/DXMT/x64
 cp -R "${dxmt}/i386-windows" Libraries/DXMT/x32
 
@@ -110,6 +117,8 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>dxvkVersion</key><string>${DXVK_VERSION}</string>
   <key>dxmtVersion</key><string>${DXMT_VERSION}</string>
   <key>moltenvkVersion</key><string>${MOLTENVK_VERSION}</string>
+  <key>hud</key><true/>
+  <key>frameGeneration</key><false/>
 </dict>
 </plist>
 PLIST

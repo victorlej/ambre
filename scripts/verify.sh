@@ -40,6 +40,8 @@ strings "${W}/lib/wine/x86_64-unix/wine" | grep -q 'public.app-category.games' |
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
+strings Libraries/DXVK/x64/d3d11.dll | grep -q AMBRE_VERSION || bad "compteur Ambre absent de DXVK (x64)"
+strings Libraries/DXVK/x32/d3d11.dll | grep -q AMBRE_VERSION || bad "compteur Ambre absent de DXVK (x32)"
 [ -f Libraries/DXMT/x64/d3d11.dll ] || bad "DXMT absent"
 [ -f "${W}/lib/libMoltenVK.dylib" ] || bad "MoltenVK absent"
 
