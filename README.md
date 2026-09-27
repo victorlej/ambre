@@ -41,9 +41,9 @@ La compilation se fait sur un Mac de GitHub (`.github/workflows/build.yml`) :
 2. outils de compilation en natif, moteur en x86_64 (Rosetta 2), partie Windows avec mingw-w64 gcc ;
 3. assemblage d'un dossier `Libraries/` déplaçable (`scripts/package.sh`) ;
 4. contrôles (`scripts/verify.sh`) : aucune référence au Mac de compilation, chaque bibliothèque se charge, le moteur démarre, la partie 32 bits existe, l'identité de jeu est présente ;
-5. sur une étiquette `v*`, publication de `Libraries.tar.gz` et de son empreinte.
+5. publication de `Libraries.tar.gz` et de son empreinte : sur une étiquette `v*`, ou sur un lancement manuel avec **Publier** coché.
 
-Lancer une compilation à la main : onglet **Actions** → « Ambre — compilation du moteur » → **Run workflow**.
+Lancer une compilation à la main : onglet **Actions** → « Ambre — compilation du moteur » → **Run workflow**, depuis `main`. Pour publier une version, remplir le **numéro** (ex. `1.3.0`), cocher **Publier** et écrire les **nouveautés** (une par ligne ou séparées par « | »). Le numéro est vérifié avant la compilation (forme `1.3.0`, version pas encore publiée) ; la version n'est créée que si tous les contrôles passent, au commit compilé. Allia la propose ensuite dans Réglages → Moteur.
 
 ## Feuille de route
 
@@ -57,7 +57,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **2.x** | prévue | Génération d'images, DirectX 12 |
 | **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
 
-Compilation : ~35 min sur GitHub Actions (DXVK 6 min, Wine ~16 min avec le cache, assemblage ~3 min, contrôles ~5 min). Une étiquette `v*` compile et publie ; on peut aussi lancer à la main avec un numéro de version et publier l'artefact testé.
+Compilation : ~35 min sur GitHub Actions (DXVK 6 min, Wine ~16 min avec le cache, assemblage ~3 min, contrôles ~5 min). Une étiquette `v*` compile et publie ; un lancement manuel avec « Publier » fait de même sans rien installer sur un Mac.
 
 ## Licence
 
