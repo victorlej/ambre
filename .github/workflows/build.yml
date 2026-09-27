@@ -216,7 +216,11 @@ jobs:
         run: |
           export PATH="$NIX_TOOL_PATH$PATH"
           if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.${GITHUB_RUN_NUMBER}-test"; fi
+          # Mouchard : ce qui tourne toutes les 30 s (l'assemblage a déjà pris 40 min sans rien dire).
+          ( while sleep 30; do echo "--- $(date +%T) en cours :"; ps -Ao etime=,pcpu=,command= | grep -vE ' (ps|sleep|grep) ' | sort -k2 -rn | head -4 | cut -c1-200; done ) &
+          spy=$!
           scripts/package.sh build "$version"
+          kill "$spy" 2>/dev/null || true
 
       - name: Contrôles
         run: scripts/verify.sh
