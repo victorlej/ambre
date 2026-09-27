@@ -213,6 +213,8 @@ jobs:
           path: dxvk-build
 
       - name: Assemblage
+        # Normalement quelques minutes : au-delà, on arrête pour lire le mouchard sans attendre.
+        timeout-minutes: 15
         run: |
           export PATH="$NIX_TOOL_PATH$PATH"
           if [ "${GITHUB_REF_TYPE}" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.${GITHUB_RUN_NUMBER}-test"; fi
