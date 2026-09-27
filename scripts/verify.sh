@@ -27,6 +27,13 @@ echo "== 3. le moteur démarre"
 v="$(WINEPREFIX="${PWD}/verify-prefix" WINEDEBUG=-all "${W}/bin/wine" --version 2>&1)" || bad "wine --version a échoué : ${v}"
 echo "   ${v}"
 
+echo "== 3b. bibliothèques chargées par leur nom : gnutls (connexions sécurisées de Steam), MoltenVK"
+for so in secur32 winevulkan winemac; do
+    otool -l "${W}/lib/wine/x86_64-unix/${so}.so" | grep -q "@loader_path/../../ " || bad "${so}.so ne cherche pas dans Wine/lib (rpath)"
+done
+sec="$(WINEPREFIX="${PWD}/verify-prefix" WINEDEBUG=err+all "${W}/bin/wine" rundll32 secur32.dll,InitSecurityInterfaceW 2>&1 || true)"
+case "${sec}" in *"Failed to load libgnutls"*) bad "gnutls ne se charge pas : Steam ne pourra pas se connecter" ;; esac
+
 echo "== 4. la partie 32 bits existe (sinon tout programme 32 bits échoue en c0000135)"
 [ -s "${W}/lib/wine/i386-windows/ntdll.dll" ] || bad "pas de i386-windows/ntdll.dll"
 
