@@ -167,15 +167,11 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>dxvkVersion</key><string>${DXVK_VERSION}</string>
   <key>dxmtVersion</key><string>${DXMT_VERSION}</string>
   <key>moltenvkVersion</key><string>${MOLTENVK_VERSION}</string>
-  <key>hud</key><true/>
+  <key>hud</key><false/>
   <key>frameGeneration</key><false/>
   <key>gameBundle</key><true/>
   <key>gameDock</key><true/>
-  <key>hudBridge</key><true/>
-  <key>hudPanel</key><true/>
-  <key>frameLog</key><true/>
   <key>gameQoS</key><true/>
-  <key>pipelineCache</key><true/>
 </dict>
 </plist>
 PLIST

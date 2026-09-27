@@ -59,11 +59,6 @@ LC_ALL=C grep -aqF anpi "${W}/lib/wine/x86_64-unix/nsiproxy.so" || bad "correcti
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
-LC_ALL=C grep -aqF AMBRE_VERSION Libraries/DXVK/x64/d3d11.dll || bad "compteur Ambre absent de DXVK (x64)"
-LC_ALL=C grep -aqF AMBRE_VERSION Libraries/DXVK/x32/d3d11.dll || bad "compteur Ambre absent de DXVK (x32)"
-LC_ALL=C grep -aqF ambrepanel Libraries/DXVK/x64/d3d11.dll || bad "compteur complet absent de DXVK (x64)"
-LC_ALL=C grep -aqF frames.txt Libraries/DXVK/x64/d3d11.dll || bad "mesure image par image absente de DXVK (x64)"
-LC_ALL=C grep -aqF mvk-cache Libraries/DXVK/x64/d3d11.dll || bad "cache des shaders absent de DXVK (x64)"
 [ -f Libraries/DXMT/x64/d3d11.dll ] || bad "DXMT absent"
 [ -f "${W}/lib/libMoltenVK.dylib" ] || bad "MoltenVK absent"
 

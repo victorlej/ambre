@@ -30,7 +30,8 @@ env:
   WINECX_COMMIT: e0aa380780b73e20fabcfe78fd42713b94929a53
   NIXPKGS_REV: ac62194c3917d5f474c1a844b6fd6da2db95077d
   MOLTENVK_VERSION: "1.4.2"
-  # DXVK-macOS de Gcenx (licence zlib), étiquette v1.10.3-20230507-repack, compilé avec dxvk/patches.
+  # DXVK-macOS de Gcenx (licence zlib), étiquette v1.10.3-20230507-repack, compilé avec dxvk/patches
+  # (correctif de compilation seulement ; les fonctions d'Ambre dans DXVK sont dans Ambre Pro, privé).
   DXVK_REPO: https://github.com/Gcenx/DXVK-macOS.git
   DXVK_COMMIT: 8f1e28deed3ad30802f7e1bdff428ec14e6e7817
   DXVK_VERSION: "1.10.3"
@@ -73,7 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Outils (meson, ninja, glslang, mingw-w64)
         run: brew install -q meson ninja glslang mingw-w64
-      - name: DXVK avec le compteur Ambre
+      - name: DXVK
         run: |
           git init -q dxvk-src
           git -C dxvk-src remote add origin "$DXVK_REPO"
@@ -87,7 +88,6 @@ jobs:
           mkdir -p dxvk-out
           bash dxvk-src/package-release.sh "$DXVK_VERSION-ambre" "$PWD/dxvk-out" --no-package
           ls -R dxvk-out | head -20
-          LC_ALL=C grep -aqF AMBRE_VERSION dxvk-out/*/x64/d3d11.dll || { echo "::error::compteur Ambre absent de d3d11.dll"; exit 1; }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ambre-dxvk
