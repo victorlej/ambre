@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-27b",
+  "updated": "2026-09-27c",
   "games": {
     "489830": {
       "level": "optimized",
@@ -17,7 +17,7 @@
       "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-27" },
       "settings": ["DXVK", "Jeu Unity : DirectX 11 forcé (automatique)", "Mode Jeu"],
       "stats": { "fps": 61.1, "low": 48.4, "steadiness": 0.96, "stutters": "1 saccade en 3 minutes (au chargement)", "gpu": 0.2, "cpu": 0.6, "pShare": 0.92, "quality": "Réglages du jeu par défaut" },
-      "notes": ["Mesuré sur une partie de 3 minutes. Les menus montent jusqu'à 144 images par seconde.", "Manette : à confirmer lors d'une prochaine partie."]
+      "notes": ["Mesuré sur une partie de 3 minutes. Les menus montent jusqu'à 144 images par seconde.", "Manette vérifiée."]
     },
     "4001890": {
       "level": "broken",
