@@ -47,13 +47,17 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 
 ## Feuille de route
 
-| Version | Contenu |
-|---|---|
-| **1.0** | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
-| **1.1** | Mode Jeu pour le programme du jeu (chargeur rangé dans un vrai paquet d'app), cache des shaders conservé, priorité des fils du jeu, corrections réseau |
-| **2.0** | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
-| **2.x** | Génération d'images (MetalFX Frame Interpolation, mouvement estimé par VideoToolbox), DirectX 12 |
-| **Plus tard** | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
+| Version | État | Contenu |
+|---|---|---|
+| **1.0.0** | ✅ publiée | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
+| **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
+| **1.2.0** | compilée, à publier | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
+| **1.3** | prévue | Démarrage de Steam plus rapide (interface CEF sous Wine), cache des shaders conservé, priorité des fils du jeu, corrections réseau (How to Fish) |
+| **2.0** | prévue | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |
+| **2.x** | prévue | Génération d'images, DirectX 12 |
+| **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
+
+Compilation : ~35 min sur GitHub Actions (DXVK 6 min, Wine ~16 min avec le cache, assemblage ~3 min, contrôles ~5 min). Une étiquette `v*` compile et publie ; on peut aussi lancer à la main avec un numéro de version et publier l'artefact testé.
 
 ## Licence
 
