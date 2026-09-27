@@ -1,0 +1,21 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ceeb424..373d6b7 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -422,6 +422,16 @@ static void init_paths(void)
+         wineloader = build_path( ntdll_dir, "wine" );
+     }
+ 
++    /* Ambre : lancer les nouveaux programmes par le chemin indiqué (le lien
++     * « Allia Jeu.app/Contents/MacOS/wine »), pour que macOS les rattache à
++     * l'app « Allia Jeu », déclarée comme jeu : Mode Jeu pour le jeu lui-même.
++     * macOS garde le chemin utilisé au lancement ; Wine, lui, suit le lien. */
++    {
++        const char *ambre_loader = getenv( "AMBRE_WINELOADER" );
++        if (ambre_loader && ambre_loader[0] == '/' && !access( ambre_loader, X_OK ))
++            wineloader = strdup( ambre_loader );
++    }
++
+     set_dll_path();
+     set_system_dll_path();
+     set_home_dir();

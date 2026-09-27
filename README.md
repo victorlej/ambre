@@ -18,6 +18,7 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | Correctif | Pourquoi |
 |---|---|
 | `0001-identite-de-jeu.patch` | Le chargeur se déclare comme un jeu (`app.allia.game`, catégorie jeux, `GCSupportsGameMode`) : macOS active le Mode Jeu. |
+| `0002-mode-jeu-pour-le-jeu.patch` | Si `AMBRE_WINELOADER` est posé, Wine lance les nouveaux programmes par ce chemin (le lien `Allia Jeu.app/Contents/MacOS/wine`) : macOS rattache le jeu lui-même à l'app « Allia Jeu », déclarée comme jeu, et lui donne le Mode Jeu. |
 | `dxvk/patches/0001-compteur-ambre.patch` | Compteur d'images d'Ambre dans DXVK (`DXVK_HUD=ambre,lows,cpu,…`) : nom et version du moteur, images/s moyennes, 1 % et 0,1 % les plus lentes, temps d'image, charge du processeur. |
 
 ## Jeux certifiés

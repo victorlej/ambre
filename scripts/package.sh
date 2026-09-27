@@ -105,6 +105,35 @@ echo "== identité de jeu du chargeur (Mode Jeu : macOS lit la signature)"
 codesign --force --sign - --identifier app.allia.game "${loader}"
 codesign -dvvv "${loader}" 2>&1 | grep -E 'Identifier|Info.plist'
 
+echo "== paquet « Allia Jeu.app » (Mode Jeu pour le programme du jeu)"
+# macOS rattache un programme à l'app dont il est l'exécutable principal (Contents/MacOS/<nom>),
+# d'après le chemin utilisé pour le lancer, même si c'est un lien. Allia lance Wine par ce lien et
+# pose AMBRE_WINELOADER (correctif 0002) pour que Wine lance aussi les jeux par ce chemin :
+# le jeu devient « Allia Jeu », déclaré comme jeu → Mode Jeu. Wine suit le lien pour trouver ntdll.
+game="Libraries/Allia Jeu.app/Contents"
+mkdir -p "${game}/MacOS" "${game}/Resources"
+ln -sf ../../../Wine/lib/wine/x86_64-unix/wine "${game}/MacOS/wine"
+cat > "${game}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>app.allia.game</string>
+  <key>CFBundleName</key><string>Allia</string>
+  <key>CFBundleDisplayName</key><string>Allia</string>
+  <key>CFBundleExecutable</key><string>wine</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+  <key>GCSupportsGameMode</key><true/>
+  <key>LSSupportsGameMode</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+</dict>
+</plist>
+PLIST
+
 echo "== version"
 cat > Libraries/AmbreVersion.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,6 +148,7 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>moltenvkVersion</key><string>${MOLTENVK_VERSION}</string>
   <key>hud</key><true/>
   <key>frameGeneration</key><false/>
+  <key>gameBundle</key><true/>
 </dict>
 </plist>
 PLIST
