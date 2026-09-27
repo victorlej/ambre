@@ -19,6 +19,17 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 |---|---|
 | `0001-identite-de-jeu.patch` | Le chargeur se déclare comme un jeu (`app.allia.game`, catégorie jeux, `GCSupportsGameMode`) : macOS active le Mode Jeu. |
 
+## Jeux certifiés
+
+`compat/jeux.json` : la certification des jeux par Allia (lue par l'app, mise à jour sans nouvelle version).
+
+| Niveau | Garantie |
+|---|---|
+| 🟢 Optimisé pour Allia | Jouable du début à la fin, ≥ 55 images/s en moyenne, peu de saccades, manette et sauvegardes vérifiées, sur Mac M4 aux réglages recommandés |
+| 🟡 Fonctionne | Jouable, performances ou détails pas encore au niveau « optimisé » |
+| ⚪ Pas encore testé | Aucune vérification |
+| 🔴 Ne fonctionne pas | Ne démarre pas ou se bloque |
+
 ## Compilation
 
 La compilation se fait sur un Mac de GitHub (`.github/workflows/build.yml`) :

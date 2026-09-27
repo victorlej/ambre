@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "updated": "2026-09-27",
+  "games": {
+    "489830": {
+      "level": "optimized",
+      "summary": "Tourne à 60 images par seconde en intérieur, avec voix, musiques, sauvegardes et manette.",
+      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
+      "settings": ["DXVK", "Limite à 60 images par seconde (indispensable : la physique de Skyrim est liée aux images)", "Mode Jeu", "msync"],
+      "stats": { "fps": 58.6, "low": 49.7, "steadiness": 0.9, "stutters": "1 à 4 saccades en 5 minutes", "gpu": 0.8, "cpu": 1.8, "pShare": 0.8, "quality": "1920 × 1080, réglages Ultra" },
+      "notes": ["Mesuré sur 4 parties de 2 à 5 minutes (intérieur, ville, extérieur)."],
+      "issues": ["En extérieur aux réglages Ultra, la puce graphique sature : 45 à 55 images par seconde. Amélioration prévue avec Ambre 2.0 (traduction directe vers Metal)."]
+    },
+    "945360": {
+      "level": "works",
+      "summary": "Parties en ligne vérifiées.",
+      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
+      "settings": ["DXVK", "Jeu Unity : DirectX 11 forcé (automatique)"],
+      "notes": ["Mesures de performance à faire avant de viser « Optimisé pour Allia »."]
+    },
+    "4001890": {
+      "level": "broken",
+      "summary": "Le menu s'affiche, mais le jeu se fige au lancement d'une partie.",
+      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
+      "settings": ["DXVK et DXMT essayés", "Jeu Unity : DirectX 11 forcé (automatique)"],
+      "issues": ["Se fige juste après le démarrage de son serveur local (UnityTransport, port 7777), même en solo. Piste : le réseau de Wine sur Mac."]
+    }
+  }
+}
