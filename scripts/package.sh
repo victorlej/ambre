@@ -127,6 +127,8 @@ echo "== $(date +%T) paquet « Allia Jeu.app » (Mode Jeu pour le programme du j
 # d'après le chemin utilisé pour le lancer, même si c'est un lien. Allia lance Wine par ce lien et
 # pose AMBRE_WINELOADER (correctif 0002) pour que Wine lance aussi les jeux par ce chemin :
 # le jeu devient « Allia Jeu », déclaré comme jeu → Mode Jeu. Wine suit le lien pour trouver ntdll.
+# LSUIElement : les programmes sans fenêtre (services de Wine) restent hors du Dock ; Wine passe au
+# premier plan ceux qui ouvrent une fenêtre (vérifié : Bloc-notes « Foreground », services « UIElement »).
 game="Libraries/Allia Jeu.app/Contents"
 mkdir -p "${game}/MacOS" "${game}/Resources"
 ln -sf ../../../Wine/lib/wine/x86_64-unix/wine "${game}/MacOS/wine"
@@ -145,6 +147,7 @@ cat > "${game}/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>GCSupportsGameMode</key><true/>
   <key>LSSupportsGameMode</key><true/>
+  <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
