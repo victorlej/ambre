@@ -39,7 +39,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Outils (meson, ninja, glslang, mingw-w64)
         run: brew install -q meson ninja glslang mingw-w64
       - name: DXVK avec le compteur Ambre
@@ -57,7 +57,7 @@ jobs:
           bash dxvk-src/package-release.sh "$DXVK_VERSION-ambre" "$PWD/dxvk-out" --no-package
           ls -R dxvk-out | head -20
           strings dxvk-out/*/x64/d3d11.dll | grep -q AMBRE_VERSION || { echo "::error::compteur Ambre absent de d3d11.dll"; exit 1; }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ambre-dxvk
           path: dxvk-out
@@ -67,7 +67,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Rosetta
         run: |
@@ -95,7 +95,7 @@ jobs:
           done
 
       - name: Cache de compilation (restauration)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.ccache
           key: ccache-${{ env.WINECX_COMMIT }}-${{ hashFiles('patches/**') }}-${{ github.run_id }}
@@ -104,7 +104,7 @@ jobs:
             ccache-
 
       - name: Nix
-        uses: DeterminateSystems/nix-installer-action@v23
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
           extra-conf: |
@@ -207,7 +207,7 @@ jobs:
       - name: Composants (wine-mono, wine-gecko, DXVK, DXMT, MoltenVK)
         run: scripts/fetch-components.sh winecx
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ambre-dxvk
           path: dxvk-build
@@ -221,7 +221,7 @@ jobs:
       - name: Contrôles
         run: scripts/verify.sh
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ambre-libraries
           path: |
@@ -236,7 +236,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ambre-libraries
       - name: Publication
