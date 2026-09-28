@@ -1,0 +1,52 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index e27aa90..c32059d 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -712,6 +712,39 @@ static char *ambre_game_loader( const char *image_path )
+     return path;
+ }
+ 
++/* Ambre : réglages propres à un jeu, sans redémarrer Steam. Allia écrit à côté du lien du jeu un
++ * fichier AMBRE_GAME_BUNDLES/<programme>.env (« NOM=valeur » par ligne, « NOM= » pour retirer la
++ * variable) : appliqué au programme du jeu seulement, juste avant son lancement (les jeux héritent
++ * sinon de l'environnement de Steam, qu'il fallait redémarrer pour changer un réglage). */
++static void ambre_game_env( const char *image_path )
++{
++    const char *dir = getenv( "AMBRE_GAME_BUNDLES" );
++    const char *name, *p;
++    char key[256], file[PATH_MAX], line[4096], *eq, *end;
++    size_t i, len;
++    FILE *f;
++
++    if (!dir || dir[0] != '/' || !image_path) return;
++    for (name = p = image_path; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    len = strlen( name );
++    if (len > 4 && name[len - 4] == '.' && (name[len - 3] | 0x20) == 'e' &&
++        (name[len - 2] | 0x20) == 'x' && (name[len - 1] | 0x20) == 'e') len -= 4;
++    if (!len || len >= sizeof(key)) return;
++    for (i = 0; i < len; i++) key[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
++    key[len] = 0;
++    if (snprintf( file, sizeof(file), "%s/%s.env", dir, key ) >= (int)sizeof(file)) return;
++    if (!(f = fopen( file, "r" ))) return;
++    while (fgets( line, sizeof(line), f ))
++    {
++        if ((end = strpbrk( line, "\r\n" ))) *end = 0;
++        if (line[0] == '#' || !(eq = strchr( line, '=' )) || eq == line) continue;
++        *eq = 0;
++        if (eq[1]) setenv( line, eq + 1, 1 );
++        else unsetenv( line );
++    }
++    fclose( f );
++}
++
+ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )
+ {
+     static char noexec[] = "WINELOADERNOEXEC=1";
+@@ -727,6 +760,7 @@ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )
+          * ambre_game_process dans thread.c). */
+         static char game_process[] = "AMBRE_GAME_PROCESS=1";
+         putenv( game_process );
++        ambre_game_env( image_path );
+         argv[1] = game_loader;
+         preloader_exec( argv, image_path );
+     }

@@ -1,0 +1,20 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 84db441..e27aa90 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1634,6 +1634,15 @@ NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
+     if (pe_mapping->image.wine_builtin)
+     {
+         if (loadorder == LO_NATIVE) return STATUS_DLL_NOT_FOUND;
++        /* Ambre : une DLL « builtin » posée dans le dossier d'un programme (hors dossiers système)
++         * est chargée telle quelle si AMBRE_LOCAL_BUILTINS est posé. Allia met ainsi DXMT (Metal
++         * direct, livré en DLL builtin) à côté d'un jeu, pour ce jeu seulement ; sinon Wine chargeait
++         * à la place ses propres d3d11/dxgi (wined3d) et le jeu n'avait jamais DXMT. */
++        if (!is_system_dir && getenv( "AMBRE_LOCAL_BUILTINS" ))
++        {
++            TRACE( "%s : DLL builtin du programme, chargée telle quelle\n", debugstr_us(&pe_mapping->nt_name) );
++            return STATUS_IMAGE_ALREADY_LOADED;
++        }
+         loadorder = LO_BUILTIN_NATIVE;  /* load builtin, then fallback to the file we found */
+     }
+     else if (pe_mapping->image.wine_fakedll)

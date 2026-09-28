@@ -23,6 +23,8 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | `0004-reseau-sans-dns-ipv4.patch` | `GetAdaptersAddresses` : une carte sans serveur DNS de la famille demandée (réseau IPv6 seul, partage de connexion) est listée sans DNS au lieu de faire échouer toute la liste ; taille de départ initialisée. Steam voit enfin sa carte réseau allumée et se connecte sans attendre 20 s (« Timed out waiting for network »). |
 | `0005-fils-du-jeu-interactifs.patch` | Un jeu lancé par son lien Allia (correctif 0003) reçoit `AMBRE_GAME_PROCESS` : tous ses fils sont créés en priorité « interactive » (`QOS_CLASS_USER_INTERACTIVE`) ; macOS les garde sur les cœurs performants et monte leur fréquence plus vite. |
 | `0006-cartes-internes-du-mac.patch` | Sur Mac, les interfaces internes d'Apple (awdl, llw, anpi, utun, gif, stf, bridge, ap, nan, ipsec) ne sont présentées aux programmes Windows que si elles ont une adresse IPv4 : 6 cartes au lieu d'environ 24. Steam ne lit que 10 cartes, rangées dans un ordre quelconque : la carte connectée en était souvent absente, d'où 20 s d'attente du réseau au démarrage. |
+| `0007-dll-builtin-du-jeu.patch` | Si `AMBRE_LOCAL_BUILTINS` est posé, une DLL « builtin » placée dans le dossier d'un programme (hors dossiers système) est chargée telle quelle : DXMT (livré en DLL builtin) fonctionne jeu par jeu. Sans cela, Wine chargeait ses propres d3d11/dxgi (wined3d) et le jeu n'avait jamais DXMT. |
+| `0008-reglages-par-jeu.patch` | Au lancement d'un programme de jeu (lien du correctif 0003), Wine applique le fichier `AMBRE_GAME_BUNDLES/<programme>.env` (« NOM=valeur », « NOM= » pour retirer) : réglages propres à un jeu (limite d'images, compteur, DXMT, MetalFX…) sans redémarrer Steam. |
 | Ambre Pro (privé) | Les fonctions exclusives d'Ambre dans DXVK (compteur, mesure pour Allia, cache des shaders) sont dans un module privé, diffusé compilé. DXVK (licence zlib) le permet ; les modifications de Wine (LGPL), elles, sont toutes ici. |
 
 ## Jeux certifiés
@@ -55,6 +57,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.0.0** | ✅ publiée | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
 | **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
 | **1.2.0** | ✅ publiée | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
+| **1.5** | préparée (étape vers la 2.0) | Metal direct par jeu avec DXMT (0007), réglages par jeu sans redémarrer Steam (0008) ; avec Allia : MetalFX (agrandissement de DXMT), limite d'images de DXMT, cache des shaders de DXMT |
 | **1.4.0** | ✅ publiée | Démarrage de Steam sans les 20 s d'attente (0006, avec 0004), fils du jeu en priorité interactive (0005) ; avec Ambre Pro 1.4.0 : nouveau compteur, mesure précise, cache des shaders |
 | **1.3.0** | ✅ publiée | Démarrage de Steam plus rapide : Steam voit sa carte réseau sans DNS IPv4 et n'attend plus 20 s (correctif 0004) |
 | **2.0** | prévue | DirectX 11 → Metal direct (DXMT corrigé), MetalFX Upscaling |

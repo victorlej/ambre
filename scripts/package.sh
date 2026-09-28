@@ -172,6 +172,8 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>gameBundle</key><true/>
   <key>gameDock</key><true/>
   <key>gameQoS</key><true/>
+  <key>localBuiltins</key><true/>
+  <key>gameEnv</key><true/>
 </dict>
 </plist>
 PLIST
