@@ -1,0 +1,152 @@
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 6a8caca..9e19960 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1140,6 +1140,9 @@ public:
+   }
+ 
+   ~MTLD3D11DXGIDevice() {
++    // Ambre : les objets en attente de destruction partent avant le périphérique ;
++    // ceux libérés pendant sa destruction aussi (fin : destructeur de destruction_guard_).
++    DeferredDestruction::beginDeviceDestruction();
+     if (local_kmt_) {
+       D3DKMT_DESTROYDEVICE destroy = {};
+       destroy.hDevice = local_kmt_;
+@@ -1289,6 +1292,10 @@ public:
+   D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
+ 
+ private:
++  /* Ambre : déclaré en premier, donc détruit en dernier (après d3d11_device_). */
++  struct DestructionGuard {
++    ~DestructionGuard() { DeferredDestruction::endDeviceDestruction(); }
++  } destruction_guard_;
+   Com<IMTLDXGIAdapter> adapter_;
+   D3DKMT_HANDLE local_kmt_ = 0;
+   std::unique_ptr<Device> device;
+diff --git a/src/d3d11/d3d11_device_child.hpp b/src/d3d11/d3d11_device_child.hpp
+index 342301d..c77f703 100644
+--- a/src/d3d11/d3d11_device_child.hpp
++++ b/src/d3d11/d3d11_device_child.hpp
+@@ -5,6 +5,9 @@
+ #include "com/com_object.hpp"
+ #include "com/com_private_data.hpp"
+ #include "d3d11_private.h"
++#include <deque>
++#include <mutex>
++#include <vector>
+ 
+ namespace dxmt {
+ 
+@@ -74,6 +77,75 @@ Speaking of multi-threading:
+ 
+ */
+ 
++/**
++Ambre : destruction différée, comme Direct3D 11 et DXVK (qui gardent un objet tant que le GPU
++s'en sert). Des jeux libèrent un objet une fois de trop et l'utilisent juste après (Skyrim SE :
++« Pure virtual function called ») ; détruit une seconde plus tard, l'objet est encore intact.
++Tout est détruit tout de suite pendant la destruction d'un périphérique (les objets ne doivent
++pas lui survivre).
++*/
++class DeferredDestruction {
++public:
++  static void push(void *object, void (*destroy)(void *)) {
++    auto &self = instance();
++    std::vector<Entry> ready;
++    {
++      std::lock_guard<std::mutex> lock(self.mutex_);
++      if (self.immediate_ == 0) {
++        uint64_t now = GetTickCount64();
++        self.queue_.push_back({now, object, destroy});
++        while (!self.queue_.empty() &&
++               (now - self.queue_.front().time >= kDelayMs || self.queue_.size() > kMaxPending)) {
++          ready.push_back(self.queue_.front());
++          self.queue_.pop_front();
++        }
++      } else {
++        ready.push_back({0, object, destroy});
++      }
++    }
++    // Hors du verrou : un destructeur peut libérer d'autres objets.
++    for (auto &entry : ready)
++      entry.destroy(entry.object);
++  }
++
++  /* Destruction d'un périphérique : tout de suite, jusqu'à endDeviceDestruction(). */
++  static void beginDeviceDestruction() {
++    auto &self = instance();
++    std::deque<Entry> pending;
++    {
++      std::lock_guard<std::mutex> lock(self.mutex_);
++      self.immediate_++;
++      pending.swap(self.queue_);
++    }
++    for (auto &entry : pending)
++      entry.destroy(entry.object);
++  }
++
++  static void endDeviceDestruction() {
++    auto &self = instance();
++    std::lock_guard<std::mutex> lock(self.mutex_);
++    self.immediate_--;
++  }
++
++private:
++  struct Entry {
++    uint64_t time;
++    void *object;
++    void (*destroy)(void *);
++  };
++  static constexpr uint64_t kDelayMs = 1000;
++  static constexpr size_t kMaxPending = 16384;
++
++  static DeferredDestruction &instance() {
++    static DeferredDestruction self;
++    return self;
++  }
++
++  std::mutex mutex_;
++  std::deque<Entry> queue_;
++  uint32_t immediate_ = 0;
++};
++
+ template <typename... Base>
+ class MTLD3D11DeviceChild : public MTLD3D11DeviceObject<ComObject<Base...>> {
+ 
+@@ -82,6 +154,13 @@ public:
+       : MTLD3D11DeviceObject<ComObject<Base...>>(pDevice) {}
+ 
+   virtual ~MTLD3D11DeviceChild() {};
++
++protected:
++  void DestroyObject() override {
++    DeferredDestruction::push(this, [](void *object) {
++      delete static_cast<MTLD3D11DeviceChild *>(object);
++    });
++  }
+ };
+ 
+ /**
+diff --git a/src/util/com/com_object.hpp b/src/util/com/com_object.hpp
+index 0b6259c..cb8223f 100644
+--- a/src/util/com/com_object.hpp
++++ b/src/util/com/com_object.hpp
+@@ -62,13 +62,17 @@ public:
+     uint32_t refPrivate = --m_refPrivate;
+     if (unlikely(!refPrivate)) {
+       m_refPrivate += 0x80000000;
+-      delete this;
++      DestroyObject();
+     }
+   }
+ 
+   ULONG GetPrivateRefCount() { return m_refPrivate.load(); }
+ 
+ protected:
++  /* Ambre : les objets de D3D11 remplacent ceci pour être détruits un peu plus tard
++     (voir DeferredDestruction dans d3d11_device_child.hpp). */
++  virtual void DestroyObject() { delete this; }
++
+   std::atomic<uint32_t> m_refCount = {0ul};
+   std::atomic<uint32_t> m_refPrivate = {0ul};
+ };

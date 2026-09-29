@@ -12,7 +12,7 @@ index 0550862..fccc9e2 100644
  }
 \ No newline at end of file
 diff --git a/src/util/com/com_object.hpp b/src/util/com/com_object.hpp
-index 0b6259c..8e62751 100644
+index cb8223f..7a7f092 100644
 --- a/src/util/com/com_object.hpp
 +++ b/src/util/com/com_object.hpp
 @@ -10,9 +10,42 @@
@@ -76,9 +76,9 @@ index 0b6259c..8e62751 100644
      if (unlikely(!refPrivate)) {
 +      ambre_dxmt_log("ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
        m_refPrivate += 0x80000000;
-       delete this;
+       DestroyObject();
      }
-@@ -87,6 +126,11 @@ public:
+@@ -91,6 +130,11 @@ public:
  
    ULONG STDMETHODCALLTYPE Release() {
      uint32_t refCount = --m_refCount;
@@ -90,7 +90,7 @@ index 0b6259c..8e62751 100644
      if (unlikely(!refCount))
        ReleasePrivate();
      return refCount;
-@@ -97,6 +141,7 @@ public:
+@@ -101,6 +145,7 @@ public:
    void ReleasePrivate() {
      uint32_t refPrivate = --m_refPrivate;
      if (unlikely(!refPrivate)) {
