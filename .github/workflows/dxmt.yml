@@ -148,8 +148,8 @@ jobs:
           for f in x86_64-windows/d3d11.dll x86_64-windows/dxgi.dll i386-windows/d3d11.dll; do
             [ "$(dd if="$f" bs=1 skip=64 count=16 2>/dev/null)" = "Wine builtin DLL" ] || bad "$f n'est pas une DLL builtin"
           done
-          cd ..
-          tar -czf ambre-dxmt.tar.gz -C combined dxmt
+          cd .. # dossier combined
+          tar -czf ambre-dxmt.tar.gz dxmt
           shasum -a 256 ambre-dxmt.tar.gz | tee ambre-dxmt.tar.gz.sha256
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
