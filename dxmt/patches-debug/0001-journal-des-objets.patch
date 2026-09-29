@@ -1,53 +1,100 @@
+diff --git a/src/d3d11/d3d11.cpp b/src/d3d11/d3d11.cpp
+index 0550862..fccc9e2 100644
+--- a/src/d3d11/d3d11.cpp
++++ b/src/d3d11/d3d11.cpp
+@@ -212,5 +212,7 @@ extern "C" void _massert(const char *_Message, const char *_File,
+ 
+ extern "C" void __cxa_pure_virtual() {
+   dxmt::Logger::err(dxmt::str::format("Pure virtual function called"));
++  /* Ambre (diagnostic) : qui a appelé la fonction virtuelle d'un objet détruit. */
++  ambre_dxmt_log("ambre-dxmt: fonction virtuelle pure appelee depuis %s\n", ambre_dxmt_where(__builtin_return_address(0)).text);
+   __builtin_trap();
+ }
+\ No newline at end of file
 diff --git a/src/util/com/com_object.hpp b/src/util/com/com_object.hpp
-index 0b6259c..8211cc2 100644
+index 0b6259c..8e62751 100644
 --- a/src/util/com/com_object.hpp
 +++ b/src/util/com/com_object.hpp
-@@ -10,6 +10,8 @@
+@@ -10,9 +10,42 @@
  #pragma once
  
  #include <atomic>
++#include <cstdarg>
 +#include <cstdio>
 +#include <typeinfo>
  #include "unknwn.h"
  #include "../util_likely.hpp"
  
-@@ -51,6 +53,11 @@ public:
++/* Ambre (diagnostic) : journal par le canal de Wine (__wine_dbg_output), comme le Logger de
++   DXMT ; la sortie d'erreur Windows n'existe pas pour un jeu lancé par Steam. */
++static inline void ambre_dxmt_log(const char *format, ...) {
++  char line[512];
++  va_list args;
++  va_start(args, format);
++  vsnprintf(line, sizeof(line), format, args);
++  va_end(args);
++  typedef int(__cdecl * wine_dbg_output_t)(const char *);
++  static wine_dbg_output_t output = (wine_dbg_output_t)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_dbg_output");
++  if (output) output(line); else fputs(line, stderr);
++}
++
++/* « module+décalage » d'une adresse de code (jeu, DLL), lisible sans connaître les adresses de chargement. */
++struct ambre_dxmt_where {
++  char text[160];
++  explicit ambre_dxmt_where(void *address) {
++    HMODULE module = nullptr;
++    char path[MAX_PATH] = "?";
++    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                           (LPCSTR)address, &module) && module)
++      GetModuleFileNameA(module, path, sizeof(path));
++    const char *name = path;
++    for (const char *c = path; *c; c++)
++      if (*c == '\\' || *c == '/') name = c + 1;
++    snprintf(text, sizeof(text), "%s+0x%llx", name,
++             (unsigned long long)((char *)address - (char *)module));
++  }
++};
++
+ namespace dxmt {
+ 
+ template <typename T> class NoWrapper : public T {
+@@ -51,6 +84,11 @@ public:
  
    ULONG STDMETHODCALLTYPE Release() {
      uint32_t refCount = --m_refCount;
 +    /* Ambre (diagnostic) : Release de trop, et dernier Release public avec l'appelant. */
 +    if (unlikely(refCount == 0xFFFFFFFFu))
-+      fprintf(stderr, "ambre-dxmt: RELEASE EN TROP %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++      ambre_dxmt_log("ambre-dxmt: RELEASE EN TROP %p %s appelant %s\n", (void *)this, typeid(*this).name(), ambre_dxmt_where(__builtin_return_address(0)).text);
 +    else if (unlikely(!refCount))
-+      fprintf(stderr, "ambre-dxmt: release-0 %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++      ambre_dxmt_log("ambre-dxmt: release-0 %p %s appelant %s\n", (void *)this, typeid(*this).name(), ambre_dxmt_where(__builtin_return_address(0)).text);
      if (unlikely(!refCount))
        ReleasePrivate();
      return refCount;
-@@ -61,6 +68,7 @@ public:
+@@ -61,6 +99,7 @@ public:
    void ReleasePrivate() {
      uint32_t refPrivate = --m_refPrivate;
      if (unlikely(!refPrivate)) {
-+      fprintf(stderr, "ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
++      ambre_dxmt_log("ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
        m_refPrivate += 0x80000000;
        delete this;
      }
-@@ -87,6 +95,11 @@ public:
+@@ -87,6 +126,11 @@ public:
  
    ULONG STDMETHODCALLTYPE Release() {
      uint32_t refCount = --m_refCount;
 +    /* Ambre (diagnostic) : Release de trop, et dernier Release public avec l'appelant. */
 +    if (unlikely(refCount == 0xFFFFFFFFu))
-+      fprintf(stderr, "ambre-dxmt: RELEASE EN TROP %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++      ambre_dxmt_log("ambre-dxmt: RELEASE EN TROP %p %s appelant %s\n", (void *)this, typeid(*this).name(), ambre_dxmt_where(__builtin_return_address(0)).text);
 +    else if (unlikely(!refCount))
-+      fprintf(stderr, "ambre-dxmt: release-0 %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++      ambre_dxmt_log("ambre-dxmt: release-0 %p %s appelant %s\n", (void *)this, typeid(*this).name(), ambre_dxmt_where(__builtin_return_address(0)).text);
      if (unlikely(!refCount))
        ReleasePrivate();
      return refCount;
-@@ -97,6 +110,7 @@ public:
+@@ -97,6 +141,7 @@ public:
    void ReleasePrivate() {
      uint32_t refPrivate = --m_refPrivate;
      if (unlikely(!refPrivate)) {
-+      fprintf(stderr, "ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
++      ambre_dxmt_log("ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
        m_refPrivate += 0x80000000;
        delete this;
      }
