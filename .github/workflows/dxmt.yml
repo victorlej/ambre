@@ -84,6 +84,13 @@ jobs:
             echo "correctif : $(basename "$p")"
             git -C dxmt-src apply --verbose "$GITHUB_WORKSPACE/$p"
           done
+          # Version de débogage : journal des objets (destructions, Release en trop), jamais publiée.
+          if [ "${{ inputs.debug }}" = true ]; then
+            for p in dxmt/patches-debug/*.patch; do
+              echo "correctif de diagnostic : $(basename "$p")"
+              git -C dxmt-src apply --verbose "$GITHUB_WORKSPACE/$p"
+            done
+          fi
       - name: Wine de l'auteur de DXMT (en-têtes et outils)
         run: |
           mkdir -p dxmt-src/toolchains/wine

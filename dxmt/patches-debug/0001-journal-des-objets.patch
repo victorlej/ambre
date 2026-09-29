@@ -1,0 +1,53 @@
+diff --git a/src/util/com/com_object.hpp b/src/util/com/com_object.hpp
+index 0b6259c..8211cc2 100644
+--- a/src/util/com/com_object.hpp
++++ b/src/util/com/com_object.hpp
+@@ -10,6 +10,8 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <cstdio>
++#include <typeinfo>
+ #include "unknwn.h"
+ #include "../util_likely.hpp"
+ 
+@@ -51,6 +53,11 @@ public:
+ 
+   ULONG STDMETHODCALLTYPE Release() {
+     uint32_t refCount = --m_refCount;
++    /* Ambre (diagnostic) : Release de trop, et dernier Release public avec l'appelant. */
++    if (unlikely(refCount == 0xFFFFFFFFu))
++      fprintf(stderr, "ambre-dxmt: RELEASE EN TROP %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++    else if (unlikely(!refCount))
++      fprintf(stderr, "ambre-dxmt: release-0 %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
+     if (unlikely(!refCount))
+       ReleasePrivate();
+     return refCount;
+@@ -61,6 +68,7 @@ public:
+   void ReleasePrivate() {
+     uint32_t refPrivate = --m_refPrivate;
+     if (unlikely(!refPrivate)) {
++      fprintf(stderr, "ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
+       m_refPrivate += 0x80000000;
+       delete this;
+     }
+@@ -87,6 +95,11 @@ public:
+ 
+   ULONG STDMETHODCALLTYPE Release() {
+     uint32_t refCount = --m_refCount;
++    /* Ambre (diagnostic) : Release de trop, et dernier Release public avec l'appelant. */
++    if (unlikely(refCount == 0xFFFFFFFFu))
++      fprintf(stderr, "ambre-dxmt: RELEASE EN TROP %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
++    else if (unlikely(!refCount))
++      fprintf(stderr, "ambre-dxmt: release-0 %p %s appelant %p\n", (void *)this, typeid(*this).name(), __builtin_return_address(0));
+     if (unlikely(!refCount))
+       ReleasePrivate();
+     return refCount;
+@@ -97,6 +110,7 @@ public:
+   void ReleasePrivate() {
+     uint32_t refPrivate = --m_refPrivate;
+     if (unlikely(!refPrivate)) {
++      fprintf(stderr, "ambre-dxmt: destruction %p %s\n", (void *)this, typeid(*this).name());
+       m_refPrivate += 0x80000000;
+       delete this;
+     }
