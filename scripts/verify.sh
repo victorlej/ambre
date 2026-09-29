@@ -60,7 +60,7 @@ LC_ALL=C grep -aqF AMBRE_LOCAL_BUILTINS "${W}/lib/wine/x86_64-unix/ntdll.so" || 
 LC_ALL=C grep -aqF "%s/%s.env" "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0008 absent de ntdll.so"
 LC_ALL=C grep -aqF AMBRE_GAME_ENV_NAMES "${W}/lib/wine/x86_64-unix/ntdll.so" || bad "correctif 0009 absent de ntdll.so"
 # DXMT d'Ambre (prise du compteur, correctif 0004 de dxmt/patches), pas celui publié par son auteur.
-LC_ALL=C strings Libraries/DXMT/x64/d3d11.dll | grep -qF AMBRE_PRESENT_PLUGIN_DIR || bad "DXMT d'Ambre absent (prise du compteur)"
+LC_ALL=C strings Libraries/DXMT/x64/d3d11.dll | grep -F AMBRE_PRESENT_PLUGIN_DIR >/dev/null || bad "DXMT d'Ambre absent (prise du compteur)"
 
 echo "== 7. composants graphiques"
 [ -f Libraries/DXVK/x64/d3d11.dll ] || bad "DXVK absent"
