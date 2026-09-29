@@ -11,12 +11,26 @@ on:
         description: "DXMT de débogage (option dxmt_debug : journal détaillé)"
         type: boolean
         default: false
+      ref:
+        description: "Version de DXMT (étiquette ou branche de l'auteur)"
+        type: string
+        default: v0.80
+      patches:
+        description: "Dossier des correctifs d'Ambre pour cette version"
+        type: string
+        default: dxmt/patches
   # Appelé par build.yml : le DXMT du paquet d'Ambre est celui-ci (correctifs d'Ambre compris).
   workflow_call:
     inputs:
       debug:
         type: boolean
         default: false
+      ref:
+        type: string
+        default: v0.80
+      patches:
+        type: string
+        default: dxmt/patches
 
 env:
   DXMT_REPO: https://github.com/3Shain/dxmt.git
@@ -84,8 +98,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Sources de DXMT et correctifs d'Ambre
         run: |
-          git clone -q --depth 1 --branch "$DXMT_REF" --recurse-submodules --shallow-submodules "$DXMT_REPO" dxmt-src
-          for p in dxmt/patches/*.patch; do
+          ref="${{ inputs.ref }}"; [ -n "$ref" ] || ref="$DXMT_REF"
+          dir="${{ inputs.patches }}"; [ -n "$dir" ] || dir=dxmt/patches
+          echo "DXMT $ref, correctifs de $dir"
+          git clone -q --depth 1 --branch "$ref" --recurse-submodules --shallow-submodules "$DXMT_REPO" dxmt-src
+          for p in "$dir"/*.patch; do
             [ -e "$p" ] || break
             echo "correctif : $(basename "$p")"
             git -C dxmt-src apply --verbose "$GITHUB_WORKSPACE/$p"
