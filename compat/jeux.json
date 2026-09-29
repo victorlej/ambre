@@ -1,30 +1,86 @@
 {
   "version": 1,
-  "updated": "2026-09-27c",
+  "updated": "2026-09-29a",
   "games": {
     "489830": {
       "level": "optimized",
       "summary": "Tourne à 60 images par seconde en intérieur, avec voix, musiques, sauvegardes et manette.",
-      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
-      "settings": ["DXVK", "Limite à 60 images par seconde (indispensable : la physique de Skyrim est liée aux images)", "Mode Jeu", "msync"],
-      "stats": { "fps": 58.6, "low": 49.7, "steadiness": 0.9, "stutters": "1 à 4 saccades en 5 minutes", "gpu": 0.8, "cpu": 1.8, "pShare": 0.8, "quality": "1920 × 1080, réglages Ultra" },
-      "notes": ["Mesuré sur 4 parties de 2 à 5 minutes (intérieur, ville, extérieur)."],
-      "issues": ["En extérieur aux réglages Ultra, la puce graphique sature : 45 à 55 images par seconde. Amélioration prévue avec Ambre 2.0 (traduction directe vers Metal)."]
+      "tested": {
+        "engine": "Moteur d'origine (Wine 11.17 de CrossOver)",
+        "mac": "Mac mini M4",
+        "macos": "macOS 27.2",
+        "date": "2026-09-26"
+      },
+      "settings": [
+        "Ambre Metal (Metal direct, choisi automatiquement)",
+        "Limite à 60 images par seconde (indispensable : la physique de Skyrim est liée aux images)",
+        "Mode Jeu",
+        "msync"
+      ],
+      "stats": {
+        "fps": 58.6,
+        "low": 49.7,
+        "steadiness": 0.9,
+        "stutters": "1 à 4 saccades en 5 minutes",
+        "gpu": 0.8,
+        "cpu": 1.8,
+        "pShare": 0.8,
+        "quality": "1920 × 1080, réglages Ultra"
+      },
+      "notes": [
+        "Mesuré sur 4 parties de 2 à 5 minutes (intérieur, ville, extérieur).",
+        "Ambre Metal (Ambre 1.6.1) : 59,9 images/s, stabilité 99,9 %, aucun gros accroc, sur MacBook Air M5 sur batterie (29 sept. 2026). DXVK reste le secours."
+      ],
+      "issues": [
+        "En extérieur aux réglages Ultra, la puce graphique sature : 45 à 55 images par seconde. Amélioration prévue avec Ambre 2.0 (traduction directe vers Metal)."
+      ],
+      "translator": "metal"
     },
     "945360": {
       "level": "optimized",
       "summary": "Tourne à 60 images par seconde, sans effort pour la puce (graphique à 20 %). Parties en ligne vérifiées.",
-      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-27" },
-      "settings": ["DXVK", "Jeu Unity : DirectX 11 forcé (automatique)", "Mode Jeu"],
-      "stats": { "fps": 61.1, "low": 48.4, "steadiness": 0.96, "stutters": "1 saccade en 3 minutes (au chargement)", "gpu": 0.2, "cpu": 0.6, "pShare": 0.92, "quality": "Réglages du jeu par défaut" },
-      "notes": ["Mesuré sur une partie de 3 minutes. Les menus montent jusqu'à 144 images par seconde.", "Manette vérifiée."]
+      "tested": {
+        "engine": "Moteur d'origine (Wine 11.17 de CrossOver)",
+        "mac": "Mac mini M4",
+        "macos": "macOS 27.2",
+        "date": "2026-09-27"
+      },
+      "settings": [
+        "DXVK",
+        "Jeu Unity : DirectX 11 forcé (automatique)",
+        "Mode Jeu"
+      ],
+      "stats": {
+        "fps": 61.1,
+        "low": 48.4,
+        "steadiness": 0.96,
+        "stutters": "1 saccade en 3 minutes (au chargement)",
+        "gpu": 0.2,
+        "cpu": 0.6,
+        "pShare": 0.92,
+        "quality": "Réglages du jeu par défaut"
+      },
+      "notes": [
+        "Mesuré sur une partie de 3 minutes. Les menus montent jusqu'à 144 images par seconde.",
+        "Manette vérifiée."
+      ]
     },
     "4001890": {
       "level": "broken",
       "summary": "Le menu s'affiche, mais le jeu se fige au lancement d'une partie.",
-      "tested": { "engine": "Moteur d'origine (Wine 11.17 de CrossOver)", "mac": "Mac mini M4", "macos": "macOS 27.2", "date": "2026-09-26" },
-      "settings": ["DXVK et DXMT essayés", "Jeu Unity : DirectX 11 forcé (automatique)"],
-      "issues": ["Se fige juste après le démarrage de son serveur local (UnityTransport, port 7777), même en solo. Piste : le réseau de Wine sur Mac."]
+      "tested": {
+        "engine": "Moteur d'origine (Wine 11.17 de CrossOver)",
+        "mac": "Mac mini M4",
+        "macos": "macOS 27.2",
+        "date": "2026-09-26"
+      },
+      "settings": [
+        "DXVK et DXMT essayés",
+        "Jeu Unity : DirectX 11 forcé (automatique)"
+      ],
+      "issues": [
+        "Se fige juste après le démarrage de son serveur local (UnityTransport, port 7777), même en solo. Piste : le réseau de Wine sur Mac."
+      ]
     }
   }
 }
