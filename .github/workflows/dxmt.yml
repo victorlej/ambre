@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
       ref:
-        description: "Version de DXMT (étiquette ou branche de l'auteur)"
+        description: "Version de DXMT (commit, étiquette ou branche de l'auteur ; vide : celle d'Ambre Metal)"
         type: string
-        default: v0.80
+        default: ""
       patches:
         description: "Dossier des correctifs d'Ambre pour cette version"
         type: string
@@ -27,14 +27,16 @@ on:
         default: false
       ref:
         type: string
-        default: v0.80
+        default: ""
       patches:
         type: string
         default: dxmt/patches
 
 env:
   DXMT_REPO: https://github.com/3Shain/dxmt.git
-  DXMT_REF: v0.80
+  # Ambre Metal : DXMT de l'auteur figé sur ce commit de sa branche main (ombres de Skyrim
+  # corrigées, 246 changements après la v0.80), plus dxmt/patches.
+  DXMT_REF: e86484e585a00d33f2750f96ff7c1ff56bccb06d
   LLVM_VERSION: llvmorg-15.0.7
   WINE_VERSION: v8.16-3shain
   WINE_URL: https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz
@@ -101,7 +103,11 @@ jobs:
           ref="${{ inputs.ref }}"; [ -n "$ref" ] || ref="$DXMT_REF"
           dir="${{ inputs.patches }}"; [ -n "$dir" ] || dir=dxmt/patches
           echo "DXMT $ref, correctifs de $dir"
-          git clone -q --depth 1 --branch "$ref" --recurse-submodules --shallow-submodules "$DXMT_REPO" dxmt-src
+          git init -q dxmt-src
+          git -C dxmt-src remote add origin "$DXMT_REPO"
+          git -C dxmt-src fetch -q --depth 1 origin "$ref"
+          git -C dxmt-src checkout -q FETCH_HEAD
+          git -C dxmt-src submodule update -q --init --recursive --depth 1
           for p in "$dir"/*.patch; do
             [ -e "$p" ] || break
             echo "correctif : $(basename "$p")"

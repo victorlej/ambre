@@ -1,8 +1,8 @@
 diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
-index 6c217ab..68d0be3 100644
+index fe516db..4e25515 100644
 --- a/src/d3d11/d3d11_swapchain.cpp
 +++ b/src/d3d11/d3d11_swapchain.cpp
-@@ -23,29 +23,12 @@
+@@ -24,29 +24,12 @@
  #include "dxmt_info.hpp"
  #include "dxmt_presenter.hpp"
  #include <atomic>
@@ -103,10 +103,10 @@ index 0000000..55f22ba
 +
 +} // namespace dxmt::ambre
 diff --git a/src/dxmt/dxmt_command.metal b/src/dxmt/dxmt_command.metal
-index 772ba7d..385c7fe 100644
+index 516f49e..910ccc0 100644
 --- a/src/dxmt/dxmt_command.metal
 +++ b/src/dxmt/dxmt_command.metal
-@@ -303,6 +303,15 @@ float3 to_srgb(float3 linear) {
+@@ -317,6 +317,15 @@ float3 to_srgb(float3 linear) {
    return select(1.055 * pow(linear, 1.0 / 2.4) - 0.055, linear * 12.92, linear < 0.0031308); 
  }
  
@@ -123,7 +123,7 @@ index 772ba7d..385c7fe 100644
      present_data input [[stage_in]],
      texture2d<float, access::sample> source [[texture(0), function_constant(present_backbuffer_is_not_ms)]],
 diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
-index 87624a8..e7102b7 100644
+index e5aec04..102c316 100644
 --- a/src/dxmt/dxmt_presenter.cpp
 +++ b/src/dxmt/dxmt_presenter.cpp
 @@ -3,6 +3,7 @@
@@ -206,10 +206,10 @@ index 87624a8..e7102b7 100644
 +  encoder.drawPrimitives(WMTPrimitiveTypeTriangle, 0, 3);
 +}
 +
- constexpr uint32_t kPresentFCIndex_BackbufferSizeMatched = 0x100;
- constexpr uint32_t kPresentFCIndex_HDRPQ = 0x101;
- constexpr uint32_t kPresentFCIndex_WithHDRMetadata = 0x102;
-@@ -236,6 +299,27 @@ Presenter::buildRenderPipelineState(bool is_pq, bool with_hdr_metadata, bool is_
+ void
+ Presenter::buildRenderPipelineState(bool is_pq, bool with_hdr_metadata, bool is_ms, bool gamma_enable) {
+   auto pool = WMT::MakeAutoreleasePool();
+@@ -229,6 +292,27 @@ Presenter::buildRenderPipelineState(bool is_pq, bool with_hdr_metadata, bool is_
      present_pipeline.fragment_function = fs_present_quad_scaled;
      present_scale_ = device_.newRenderPipelineState(present_pipeline, error);
    }

@@ -1,16 +1,16 @@
 diff --git a/src/d3d11/d3d11.cpp b/src/d3d11/d3d11.cpp
-index 0550862..fccc9e2 100644
+index 9d1122c..a26773d 100644
 --- a/src/d3d11/d3d11.cpp
 +++ b/src/d3d11/d3d11.cpp
-@@ -212,5 +212,7 @@ extern "C" void _massert(const char *_Message, const char *_File,
+@@ -249,6 +249,8 @@ extern "C" void _massert(const char *_Message, const char *_File,
  
  extern "C" void __cxa_pure_virtual() {
    dxmt::Logger::err(dxmt::str::format("Pure virtual function called"));
 +  /* Ambre (diagnostic) : qui a appelé la fonction virtuelle d'un objet détruit. */
 +  ambre_dxmt_log("ambre-dxmt: fonction virtuelle pure appelee depuis %s\n", ambre_dxmt_where(__builtin_return_address(0)).text);
+ #ifndef NDEBUG
    __builtin_trap();
- }
-\ No newline at end of file
+ #endif
 diff --git a/src/util/com/com_object.hpp b/src/util/com/com_object.hpp
 index cb8223f..7a7f092 100644
 --- a/src/util/com/com_object.hpp

@@ -36,6 +36,9 @@ env:
   DXVK_COMMIT: 8f1e28deed3ad30802f7e1bdff428ec14e6e7817
   DXVK_VERSION: "1.10.3"
   DXMT_VERSION: "0.80"
+  # Ambre Metal : DXMT compilé par dxmt.yml (commit de l'auteur + dxmt/patches) ; DXMT_VERSION ne sert
+  # plus qu'au téléchargement du paquet publié, remplacé ensuite.
+  DXMT_LABEL: "Ambre Metal (DXMT main e86484e)"
   # Sans cela, les binaires porteraient la version de macOS du Mac de compilation et
   # refuseraient de se charger sur un macOS plus ancien.
   MACOSX_DEPLOYMENT_TARGET: "26.0"
@@ -316,7 +319,7 @@ jobs:
           {
             echo "Ambre $version — Wine de CrossOver 26.3 sur Wine 11.17 ($WINECX_COMMIT), compilé par Ambre."
             if [ -n "$news" ]; then echo; echo "Nouveautés :"; echo "$news"; fi
-            echo "Aussi : DXVK $DXVK_VERSION compilé par Ambre, DXMT $DXMT_VERSION, MoltenVK $MOLTENVK_VERSION. Code source : ce dépôt au commit ${GITHUB_SHA:0:7}."
+            echo "Aussi : DXVK $DXVK_VERSION compilé par Ambre, $DXMT_LABEL, MoltenVK $MOLTENVK_VERSION. Code source : ce dépôt au commit ${GITHUB_SHA:0:7}."
             echo
             echo "SHA-256 : \`$sha\`"
           } > notes.md

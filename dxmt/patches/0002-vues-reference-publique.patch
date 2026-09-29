@@ -1,8 +1,8 @@
 diff --git a/src/d3d11/d3d11_resource.hpp b/src/d3d11/d3d11_resource.hpp
-index 80927e5..a01aa20 100644
+index f5602e7..b577b99 100644
 --- a/src/d3d11/d3d11_resource.hpp
 +++ b/src/d3d11/d3d11_resource.hpp
-@@ -388,6 +388,16 @@ public:
+@@ -402,6 +402,16 @@ public:
      }
      this->resource_ = pResource;
      this->bind_flags_ = this->resource_->bind_flags_;

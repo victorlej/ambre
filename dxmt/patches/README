@@ -1,1 +1,10 @@
-Correctifs de DXMT (LGPL 2.1, © CodeWeavers) appliqués par .github/workflows/dxmt.yml.
+Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués par
+.github/workflows/dxmt.yml sur le commit de l'auteur indiqué par DXMT_REF.
+
+0002 vues : référence publique sur leur ressource (comme Direct3D 11 et DXVK)
+0003 destruction différée des objets D3D11 (plantage de Skyrim SE)
+0004 prise AMBRE_PRESENT_PLUGIN_DIR : module d'extension appelé à chaque image
+0005 image d'un module d'extension posée par-dessus le jeu (compteur d'Allia)
+
+Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
+restent dans leur module privé.

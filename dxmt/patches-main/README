@@ -1,3 +1,0 @@
-Correctifs d'Ambre Metal pour la dernière version de DXMT (branche main de l'auteur), à l'essai.
-Même contenu que dxmt/patches (v0.80), sans 0001 (corrigé chez l'auteur). Compiler avec
-dxmt.yml, ref=main, patches=dxmt/patches-main.

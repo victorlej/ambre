@@ -1,8 +1,8 @@
 diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
-index 5e9404d..6c217ab 100644
+index d182587..fe516db 100644
 --- a/src/d3d11/d3d11_swapchain.cpp
 +++ b/src/d3d11/d3d11_swapchain.cpp
-@@ -23,6 +23,32 @@
+@@ -24,6 +24,32 @@
  #include "dxmt_info.hpp"
  #include "dxmt_presenter.hpp"
  #include <atomic>
@@ -35,7 +35,7 @@ index 5e9404d..6c217ab 100644
  #include <cfloat>
  #include <format>
  
-@@ -747,6 +773,8 @@ public:
+@@ -753,6 +779,8 @@ public:
      if (PresentFlags & DXGI_PRESENT_TEST)
        return hr;
  

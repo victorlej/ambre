@@ -1,8 +1,8 @@
 diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
-index 6a8caca..9e19960 100644
+index a21b3c5..8b79f83 100644
 --- a/src/d3d11/d3d11_device.cpp
 +++ b/src/d3d11/d3d11_device.cpp
-@@ -1140,6 +1140,9 @@ public:
+@@ -1148,6 +1148,9 @@ public:
    }
  
    ~MTLD3D11DXGIDevice() {
@@ -12,7 +12,7 @@ index 6a8caca..9e19960 100644
      if (local_kmt_) {
        D3DKMT_DESTROYDEVICE destroy = {};
        destroy.hDevice = local_kmt_;
-@@ -1289,6 +1292,10 @@ public:
+@@ -1302,6 +1305,10 @@ public:
    D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
  
  private:
