@@ -1,5 +1,7 @@
 # Ambre
 
+<p align="center"><img src="assets/logo/ambre-banniere.png" alt="Ambre, le moteur de jeu d'Allia" width="560"></p>
+
 **Ambre** est le moteur d'Allia : il fait tourner les jeux Windows sur les Mac à puce Apple.
 
 En grec ancien, *ēlektron* désignait à la fois l'ambre et l'électrum, l'alliage naturel d'or et d'argent. Allia vient d'« alliage » : son moteur porte le nom de l'ambre.
