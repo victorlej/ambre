@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-29a",
+  "updated": "2026-09-29b",
   "games": {
     "489830": {
       "level": "optimized",
@@ -29,7 +29,8 @@
       },
       "notes": [
         "Mesuré sur 4 parties de 2 à 5 minutes (intérieur, ville, extérieur).",
-        "Ambre Metal (Ambre 1.6.1) : 59,9 images/s, stabilité 99,9 %, aucun gros accroc, sur MacBook Air M5 sur batterie (29 sept. 2026). DXVK reste le secours."
+        "Ambre Metal (Ambre 1.6.1) : 59,9 images/s, stabilité 99,9 %, aucun gros accroc, sur MacBook Air M5 sur batterie (29 sept. 2026). DXVK reste le secours.",
+        "Génération d'images (Ambre 1.6.2 + Ambre Pro, macOS 26+) : limite à 30 images/s + case « Génération d'images » → 60 images à l'écran, stabilité 99,7 %, 3,1 W au lieu de 7,2 W (MacBook Air M5, 29 sept. 2026)."
       ],
       "issues": [
         "En extérieur aux réglages Ultra, la puce graphique sature : 45 à 55 images par seconde. Amélioration prévue avec Ambre 2.0 (traduction directe vers Metal)."
