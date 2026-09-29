@@ -144,7 +144,10 @@ jobs:
                    i386-windows/d3d11.dll x86_64-unix/winemetal.so; do
             [ -f "$f" ] || bad "$f absent"
           done
-          LC_ALL=C grep -aqF "Wine builtin DLL" x86_64-windows/d3d11.dll || bad "d3d11.dll n'est pas une DLL builtin"
+          # Marque de Wine à l'octet 0x40, entourée d'octets nuls : grep ne la voit pas, on la lit.
+          for f in x86_64-windows/d3d11.dll x86_64-windows/dxgi.dll i386-windows/d3d11.dll; do
+            [ "$(dd if="$f" bs=1 skip=64 count=16 2>/dev/null)" = "Wine builtin DLL" ] || bad "$f n'est pas une DLL builtin"
+          done
           cd ..
           tar -czf ambre-dxmt.tar.gz -C combined dxmt
           shasum -a 256 ambre-dxmt.tar.gz | tee ambre-dxmt.tar.gz.sha256
