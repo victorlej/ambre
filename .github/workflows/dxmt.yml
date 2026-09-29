@@ -117,7 +117,7 @@ jobs:
           meson setup --cross-file ${{ matrix.cross }} $extra \
             -Dwine_install_path=toolchains/wine -Ddxmt_debug=${{ inputs.debug }} \
             build --buildtype release --prefix "$GITHUB_WORKSPACE/install" --strip
-          meson compile -C build
+          ninja -C build -k 0 # toutes les erreurs d'un coup, pas seulement la première
           meson install -C build
           find "$GITHUB_WORKSPACE/install" -type f | sed "s|$GITHUB_WORKSPACE/install/||" | sort
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
