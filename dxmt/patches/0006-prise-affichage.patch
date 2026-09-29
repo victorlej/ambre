@@ -1,0 +1,47 @@
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 3327b29..5ef086d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1300,9 +1300,32 @@ _MTLBuffer_didModifyRange(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Ambre : prise d'affichage. Si la variable AMBRE_FRAME_PLUGIN désigne une bibliothèque
++   macOS qui exporte « ambre_frame_present », elle reçoit chaque image à afficher (file de
++   commandes, image, durée minimale ; 0 si aucune) et renvoie vrai si elle s'est chargée de
++   l'afficher elle-même. Sans la variable, rien ne change. */
++typedef bool (*ambre_frame_present_fn)(id<MTLCommandBuffer> command_buffer, id<MTLDrawable> drawable,
++                                       double minimum_duration);
++
++static ambre_frame_present_fn
++ambre_frame_plugin(void) {
++  static dispatch_once_t once;
++  static ambre_frame_present_fn present;
++  dispatch_once(&once, ^{
++    const char *path = getenv("AMBRE_FRAME_PLUGIN");
++    void *module = path && *path ? dlopen(path, RTLD_NOW | RTLD_LOCAL) : NULL;
++    if (module)
++      present = (ambre_frame_present_fn)dlsym(module, "ambre_frame_present");
++  });
++  return present;
++}
++
+ static NTSTATUS
+ _MTLCommandBuffer_presentDrawable(void *obj) {
+   struct unixcall_generic_obj_obj_noret *params = obj;
++  ambre_frame_present_fn plugin = ambre_frame_plugin();
++  if (plugin && plugin((id<MTLCommandBuffer>)params->handle, (id<MTLDrawable>)params->arg, 0))
++    return STATUS_SUCCESS;
+   [(id<MTLCommandBuffer>)params->handle presentDrawable:(id<MTLDrawable>)params->arg];
+   return STATUS_SUCCESS;
+ }
+@@ -1310,6 +1333,9 @@ _MTLCommandBuffer_presentDrawable(void *obj) {
+ static NTSTATUS
+ _MTLCommandBuffer_presentDrawableAfterMinimumDuration(void *obj) {
+   struct unixcall_generic_obj_obj_double_noret *params = obj;
++  ambre_frame_present_fn plugin = ambre_frame_plugin();
++  if (plugin && plugin((id<MTLCommandBuffer>)params->handle, (id<MTLDrawable>)params->arg0, params->arg1))
++    return STATUS_SUCCESS;
+   [(id<MTLCommandBuffer>)params->handle presentDrawable:(id<MTLDrawable>)params->arg0
+                                    afterMinimumDuration:params->arg1];
+   return STATUS_SUCCESS;
