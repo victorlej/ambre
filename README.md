@@ -60,7 +60,7 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.0.0** | ✅ publiée | Wine de CrossOver 26.3 sur Wine 11.17 compilé par nous, identité de jeu, contrôles automatiques |
 | **1.1.0** | ✅ publiée | Compteur Ambre en jeu (images/s, 1 % et 0,1 % bas, temps d'image, processeur), Mode Jeu pour le programme du jeu (paquet `Allia Jeu.app`, correctif 0002), DXVK compilé par Ambre |
 | **1.2.0** | ✅ publiée | Chaque jeu sous son nom et sa jaquette dans le Dock (correctif 0003), processeur du compteur mesuré par macOS (via Allia), pas d'App Nap |
-| **1.6.2** | en compilation | Prise d'affichage d'Ambre Metal (0006) pour la génération d'images d'Ambre Pro |
+| **1.6.2** | ✅ publiée | Prise d'affichage d'Ambre Metal (0006) pour la génération d'images d'Ambre Pro |
 | **1.6.1** | ✅ publiée | **Ambre Metal sur la dernière version de DXMT** (commit e86484e de l'auteur) : ombres de Skyrim corrigées, 246 améliorations de l'auteur |
 | **1.6.0** | ✅ publiée | Ambre Metal (notre DXMT : plantage de Skyrim corrigé, compteur Ambre dans l'image), réglages par jeu côté Windows (0009) |
 | **1.5.0** | ✅ publiée (étape vers la 2.0) | Metal direct par jeu avec DXMT (0007), réglages par jeu sans redémarrer Steam (0008) ; avec Allia : MetalFX (agrandissement de DXMT), limite d'images de DXMT, cache des shaders de DXMT |
