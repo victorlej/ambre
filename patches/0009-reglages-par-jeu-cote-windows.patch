@@ -1,0 +1,84 @@
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 83db4d7..af00937 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1023,6 +1023,38 @@ static void add_system_dll_path_var( WCHAR **env, SIZE_T *pos, SIZE_T *size )
+ }
+ 
+ 
++/* Ambre : réglages du fichier .env du jeu (ambre_game_env dans loader.c) recopiés dans
++ * l'environnement Windows du jeu. Un programme lancé par un autre reçoit l'environnement Windows
++ * de son parent (Steam) : DXMT, qui lit ses réglages côté Windows, ne les voyait pas. */
++static void ambre_game_env_windows( WCHAR **env, SIZE_T *pos, SIZE_T *size )
++{
++    const char *names = getenv( "AMBRE_GAME_ENV_NAMES" ), *p, *end, *value;
++    char name[256];
++    WCHAR nameW[256], *valueW;
++    SIZE_T len, value_len;
++
++    if (!names) return;
++    for (p = names; *p; p = *end ? end + 1 : end)
++    {
++        if (!(end = strchr( p, ':' ))) end = p + strlen( p );
++        len = end - p;
++        if (!len || len >= ARRAY_SIZE(name)) continue;
++        memcpy( name, p, len );
++        name[len] = 0;
++        ascii_to_unicode( nameW, name, len + 1 );
++        if ((value = getenv( name )))
++        {
++            value_len = strlen( value ) + 1;
++            if (!(valueW = malloc( value_len * sizeof(WCHAR) ))) continue;
++            ntdll_umbstowcs( value, value_len, valueW, value_len );
++            set_env_var( env, pos, size, nameW, len, valueW );
++            free( valueW );
++        }
++        else set_env_var( env, pos, size, nameW, len, NULL );
++    }
++}
++
++
+ /*************************************************************************
+  *		add_dynamic_environment
+  *
+@@ -2052,6 +2084,7 @@ void init_startup_info(void)
+     memcpy( env, (char *)info + info_size, env_size * sizeof(WCHAR) );
+     env_pos = env_size - 1;
+     add_dynamic_environment( &env, &env_pos, &env_size );
++    ambre_game_env_windows( &env, &env_pos, &env_size );
+     is_prefix_bootstrap = !!find_env_var( env, env_pos, bootstrapW, ARRAY_SIZE(bootstrapW) );
+     env[env_pos++] = 0;
+ 
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index c32059d..aa84d3a 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -721,7 +721,8 @@ static void ambre_game_env( const char *image_path )
+     const char *dir = getenv( "AMBRE_GAME_BUNDLES" );
+     const char *name, *p;
+     char key[256], file[PATH_MAX], line[4096], *eq, *end;
+-    size_t i, len;
++    static char names[4096];
++    size_t i, len, used = 0;
+     FILE *f;
+ 
+     if (!dir || dir[0] != '/' || !image_path) return;
+@@ -741,8 +742,18 @@ static void ambre_game_env( const char *image_path )
+         *eq = 0;
+         if (eq[1]) setenv( line, eq + 1, 1 );
+         else unsetenv( line );
++        /* Ambre : noms retenus pour l'environnement Windows du jeu (voir ambre_game_env_windows
++         * dans env.c) : sans cela, le jeu reçoit celui de Steam, son parent. */
++        len = strlen( line );
++        if (used + len + 2 < sizeof(names))
++        {
++            if (used) names[used++] = ':';
++            memcpy( names + used, line, len + 1 );
++            used += len;
++        }
+     }
+     fclose( f );
++    if (used) setenv( "AMBRE_GAME_ENV_NAMES", names, 1 );
+ }
+ 
+ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )

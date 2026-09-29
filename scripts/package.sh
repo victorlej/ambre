@@ -165,7 +165,7 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>wine</key><string>$(Libraries/Wine/bin/wine --version 2>/dev/null || echo inconnu)</string>
   <key>winecxCommit</key><string>${WINECX_COMMIT}</string>
   <key>dxvkVersion</key><string>${DXVK_VERSION}</string>
-  <key>dxmtVersion</key><string>${DXMT_VERSION}</string>
+  <key>dxmtVersion</key><string>${DXMT_VERSION}-ambre</string>
   <key>moltenvkVersion</key><string>${MOLTENVK_VERSION}</string>
   <key>hud</key><false/>
   <key>frameGeneration</key><false/>
@@ -174,6 +174,7 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>gameQoS</key><true/>
   <key>localBuiltins</key><true/>
   <key>gameEnv</key><true/>
+  <key>gameEnvWindows</key><true/>
 </dict>
 </plist>
 PLIST

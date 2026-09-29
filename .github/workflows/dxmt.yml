@@ -11,6 +11,12 @@ on:
         description: "DXMT de débogage (option dxmt_debug : journal détaillé)"
         type: boolean
         default: false
+  # Appelé par build.yml : le DXMT du paquet d'Ambre est celui-ci (correctifs d'Ambre compris).
+  workflow_call:
+    inputs:
+      debug:
+        type: boolean
+        default: false
 
 env:
   DXMT_REPO: https://github.com/3Shain/dxmt.git

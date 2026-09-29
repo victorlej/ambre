@@ -93,8 +93,13 @@ jobs:
           name: ambre-dxvk
           path: dxvk-out
 
+  # DXMT compilé depuis ses sources avec les correctifs d'Ambre (dxmt/patches).
+  dxmt:
+    needs: check
+    uses: ./.github/workflows/dxmt.yml
+
   build:
-    needs: dxvk
+    needs: [dxvk, dxmt]
     runs-on: macos-26
     timeout-minutes: 360
     steps:
@@ -237,6 +242,20 @@ jobs:
 
       - name: Composants (wine-mono, wine-gecko, DXVK, DXMT, MoltenVK)
         run: scripts/fetch-components.sh winecx
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ambre-dxmt
+          path: dxmt-build
+
+      - name: DXMT d'Ambre à la place du DXMT publié
+        run: |
+          cd dxmt-build && shasum -a 256 -c ambre-dxmt.tar.gz.sha256 && cd ..
+          target="payload/v${DXMT_VERSION}"
+          rm -rf "$target" dxmt-build/x && mkdir -p "$target" dxmt-build/x
+          tar -xzf dxmt-build/ambre-dxmt.tar.gz -C dxmt-build/x
+          cp -R dxmt-build/x/dxmt/. "$target/"
+          ls -R "$target" | head -30
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
