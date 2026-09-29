@@ -1,0 +1,149 @@
+name: Ambre — DXMT
+
+# Compile DXMT (Metal direct, licence LGPL 2.1, © CodeWeavers) depuis ses sources, avec les
+# correctifs de dxmt/patches, comme la version publiée par son auteur (variante « builtin »).
+# Artefact « ambre-dxmt » : même disposition que dxmt-v0.80-builtin.tar.gz (x86_64-windows,
+# i386-windows, x86_64-unix), pour remplacer le DXMT tout fait dans le paquet d'Ambre.
+on:
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "DXMT de débogage (option dxmt_debug : journal détaillé)"
+        type: boolean
+        default: false
+
+env:
+  DXMT_REPO: https://github.com/3Shain/dxmt.git
+  DXMT_REF: v0.80
+  LLVM_VERSION: llvmorg-15.0.7
+  WINE_VERSION: v8.16-3shain
+  WINE_URL: https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz
+  MESON_VERSION: "1.10.0"
+
+permissions:
+  contents: read
+
+jobs:
+  # LLVM 15 pour macOS x86_64 : DXMT s'en sert pour traduire les shaders (airconv). Long la
+  # première fois (~1 h), puis gardé en cache.
+  llvm:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - name: Cache de LLVM
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64
+          path: toolchains/llvm-darwin
+          lookup-only: true
+      - name: Compilation de LLVM
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install -q ninja
+          git clone -q --depth 1 --branch "$LLVM_VERSION" https://github.com/llvm/llvm-project.git toolchains/llvm-project
+          cmake -B toolchains/llvm-darwin-build -S toolchains/llvm-project/llvm \
+            -DCMAKE_INSTALL_PREFIX="$PWD/toolchains/llvm-darwin" \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DLLVM_HOST_TRIPLE=x86_64-apple-darwin \
+            -DLLVM_ENABLE_ASSERTIONS=On \
+            -DLLVM_ENABLE_ZSTD=Off \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_BUILD_TOOLS=Off \
+            -DLLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO=Off \
+            -G Ninja
+          cmake --build toolchains/llvm-darwin-build
+          cmake --install toolchains/llvm-darwin-build
+      - name: Enregistrement du cache de LLVM
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64
+          path: toolchains/llvm-darwin
+
+  build:
+    needs: llvm
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            cross: build-win64.txt
+          - arch: i386
+            cross: build-win32.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Sources de DXMT et correctifs d'Ambre
+        run: |
+          git clone -q --depth 1 --branch "$DXMT_REF" --recurse-submodules --shallow-submodules "$DXMT_REPO" dxmt-src
+          for p in dxmt/patches/*.patch; do
+            [ -e "$p" ] || break
+            echo "correctif : $(basename "$p")"
+            git -C dxmt-src apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
+      - name: Wine de l'auteur de DXMT (en-têtes et outils)
+        run: |
+          mkdir -p dxmt-src/toolchains/wine
+          curl -fsSL "$WINE_URL" | tar -xz -C dxmt-src/toolchains/wine
+      - name: LLVM
+        if: matrix.arch == 'x86_64'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64
+          path: toolchains/llvm-darwin
+          fail-on-cache-miss: true
+      - name: Outils (mingw-w64, ninja, meson, Xcode 16)
+        run: |
+          brew install -q mingw-w64 ninja
+          pip3 install -q "meson==$MESON_VERSION" --break-system-packages
+          x=$(ls -d /Applications/Xcode_16.1.app /Applications/Xcode_16*.app 2>/dev/null | head -1)
+          [ -n "$x" ] && sudo xcode-select -s "$x" && echo "Xcode : $x"
+          [ -d toolchains/llvm-darwin ] && mv toolchains/llvm-darwin dxmt-src/toolchains/llvm-darwin || true
+      - name: Compilation de DXMT (${{ matrix.arch }})
+        working-directory: dxmt-src
+        run: |
+          extra=""
+          [ "${{ matrix.arch }}" = x86_64 ] && extra="-Dnative_llvm_path=toolchains/llvm-darwin -Denable_nvapi=true -Denable_nvngx=true"
+          meson setup --cross-file ${{ matrix.cross }} $extra \
+            -Dwine_install_path=toolchains/wine -Ddxmt_debug=${{ inputs.debug }} \
+            build --buildtype release --prefix "$GITHUB_WORKSPACE/install" --strip
+          meson compile -C build
+          meson install -C build
+          find "$GITHUB_WORKSPACE/install" -type f | sed "s|$GITHUB_WORKSPACE/install/||" | sort
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dxmt-${{ matrix.arch }}
+          path: install
+
+  package:
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: dxmt-*
+          merge-multiple: true
+          path: combined/dxmt
+      - name: Contrôles et paquet
+        run: |
+          bad() { echo "::error::$1"; exit 1; }
+          cd combined/dxmt
+          find . -type f -name '*.a' -delete
+          find . -type f | sort
+          for f in x86_64-windows/d3d11.dll x86_64-windows/dxgi.dll x86_64-windows/winemetal.dll \
+                   i386-windows/d3d11.dll x86_64-unix/winemetal.so; do
+            [ -f "$f" ] || bad "$f absent"
+          done
+          LC_ALL=C grep -aqF "Wine builtin DLL" x86_64-windows/d3d11.dll || bad "d3d11.dll n'est pas une DLL builtin"
+          cd ..
+          tar -czf ambre-dxmt.tar.gz -C combined dxmt
+          shasum -a 256 ambre-dxmt.tar.gz | tee ambre-dxmt.tar.gz.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ambre-dxmt
+          path: |
+            combined/ambre-dxmt.tar.gz
+            combined/ambre-dxmt.tar.gz.sha256
