@@ -31,6 +31,7 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | `0007-dll-builtin-du-jeu.patch` | Si `AMBRE_LOCAL_BUILTINS` est posé, une DLL « builtin » placée dans le dossier d'un programme (hors dossiers système) est chargée telle quelle : DXMT (livré en DLL builtin) fonctionne jeu par jeu. Sans cela, Wine chargeait ses propres d3d11/dxgi (wined3d) et le jeu n'avait jamais DXMT. Depuis la 1.6.3 : jamais sous `C:\windows` (les pilotes de `system32\drivers` se chargeaient ainsi et Steam perdait le réseau). |
 | `0008-reglages-par-jeu.patch` | Au lancement d'un programme de jeu (lien du correctif 0003), Wine applique le fichier `AMBRE_GAME_BUNDLES/<programme>.env` (« NOM=valeur », « NOM= » pour retirer) : réglages propres à un jeu (limite d'images, compteur, DXMT, MetalFX…) sans redémarrer Steam. |
 | `0009-reglages-par-jeu-cote-windows.patch` | Les réglages du fichier `.env` du jeu (0008) passent aussi dans son environnement **Windows** : lancé par Steam, un jeu recevait celui de Steam, et DXMT (qui lit ses réglages côté Windows) ne voyait ni MetalFX, ni sa limite d'images, ni le compteur. |
+| `0010-priorite-des-paquets-sur-mac.patch` | macOS rend la priorité d'un paquet reçu (TOS) sous le type `IP_RECVTOS`, et non `IP_TOS` comme Linux : Wine la jetait. La bibliothèque réseau de Steam intégrée aux jeux (SteamNetworkingSockets) échouait alors (« No control data returned even though we asked for TOS? ») ; How to Fish se figeait au lancement d'une partie. |
 | Ambre Pro (privé) | Les fonctions exclusives d'Ambre (compteur, mesure pour Allia, cache des shaders dans DXVK ; compteur dans l'image et génération d'images pour Ambre Metal) sont dans un module privé, diffusé compilé ([ambre-pro-versions](https://github.com/victorlej/ambre-pro-versions)). Il se branche sur des prises génériques ; les modifications de Wine et de DXMT (LGPL), elles, sont toutes ici. |
 
 ## Ambre Metal
@@ -83,7 +84,8 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.6.0** | ✅ publiée | **Ambre Metal** (plantage de Skyrim corrigé, compteur Ambre dans l'image), réglages par jeu côté Windows (0009) |
 | **1.6.1** | ✅ publiée | Ambre Metal sur la dernière version de DXMT (commit e86484e) : ombres de Skyrim corrigées |
 | **1.6.2** | ✅ publiée | Prise d'affichage (0006 de DXMT) pour la **génération d'images** d'Ambre Pro : 30 images calculées, 60 affichées |
-| **1.6.3** | prête | Correctif 0007 restreint aux dossiers des programmes ; avec Ambre Pro 1.6.3 : génération d'images plus régulière (grille rattrapée en douceur), vrai compteur d'images affichées |
+| **1.6.3** | ✅ publiée | Correctif 0007 restreint aux dossiers des programmes ; avec Ambre Pro 1.6.3 : génération d'images plus régulière (grille rattrapée en douceur), vrai compteur d'images affichées |
+| **1.6.4** | prête | Priorité des paquets réseau sur Mac (0010) : jeux qui utilisent le réseau de Steam (How to Fish) |
 | **2.0** | prévue | MetalFX vérifié, cache des shaders Metal, choix automatique affiné |
 | **2.x** | prévue | DirectX 12 en Metal direct |
 | **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |

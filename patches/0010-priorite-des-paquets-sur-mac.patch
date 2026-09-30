@@ -1,0 +1,27 @@
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -428,6 +428,13 @@
+ 
+ #if defined(IP_TOS)
+                     case IP_TOS:
++#if defined(IP_RECVTOS) && IP_RECVTOS != IP_TOS
++                    /* Ambre : macOS (et les BSD) rendent la priorité d'un paquet reçu sous le type
++                     * IP_RECVTOS, et non IP_TOS comme Linux. Sans cela, elle était jetée et la
++                     * bibliothèque réseau de Steam (SteamNetworkingSockets) échouait : « No control
++                     * data returned even though we asked for TOS? » (How to Fish se figeait). */
++                    case IP_RECVTOS:
++#endif
+                     {
+                         INT tos = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                         ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TOS, ptr, &ctlsize,
+@@ -743,6 +750,9 @@
+ #endif
+ #if defined(IP_TOS)
+             case IP_TOS:
++#if defined(IP_RECVTOS) && IP_RECVTOS != IP_TOS
++            case IP_RECVTOS: /* Ambre : type rendu par macOS (voir convert_control_headers) */
++#endif
+                 ip_h.tos = *(BYTE *)CMSG_DATA( cmsg );
+                 break;
+ #endif
