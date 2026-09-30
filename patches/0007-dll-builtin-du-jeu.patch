@@ -2,7 +2,7 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 84db441..e27aa90 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -1634,6 +1634,15 @@ NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
+@@ -1634,6 +1634,35 @@ NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
      if (pe_mapping->image.wine_builtin)
      {
          if (loadorder == LO_NATIVE) return STATUS_DLL_NOT_FOUND;
@@ -12,8 +12,28 @@ index 84db441..e27aa90 100644
 +         * à la place ses propres d3d11/dxgi (wined3d) et le jeu n'avait jamais DXMT. */
 +        if (!is_system_dir && getenv( "AMBRE_LOCAL_BUILTINS" ))
 +        {
-+            TRACE( "%s : DLL builtin du programme, chargée telle quelle\n", debugstr_us(&pe_mapping->nt_name) );
-+            return STATUS_IMAGE_ALREADY_LOADED;
++            /* Jamais sous C:\windows (pilotes de system32\drivers compris, que Wine ne compte pas
++             * comme dossier système : le 29 sept., ils se chargeaient ainsi et Steam perdait le
++             * réseau) : seulement dans les dossiers des programmes. */
++            static const char windows_dir[] = "\\windows\\";
++            const WCHAR *name = pe_mapping->nt_name.Buffer;
++            USHORT i, j, len = pe_mapping->nt_name.Length / sizeof(WCHAR);
++            BOOL in_windows = FALSE;
++            for (i = 0; !in_windows && i + 9 <= len; i++)
++            {
++                for (j = 0; j < 9; j++)
++                {
++                    WCHAR c = name[i + j];
++                    if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++                    if (c != (WCHAR)windows_dir[j]) break;
++                }
++                if (j == 9) in_windows = TRUE;
++            }
++            if (!in_windows)
++            {
++                TRACE( "%s : DLL builtin du programme, chargée telle quelle\n", debugstr_us(&pe_mapping->nt_name) );
++                return STATUS_IMAGE_ALREADY_LOADED;
++            }
 +        }
          loadorder = LO_BUILTIN_NATIVE;  /* load builtin, then fallback to the file we found */
      }
