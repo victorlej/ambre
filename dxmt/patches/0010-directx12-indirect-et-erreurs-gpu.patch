@@ -1,5 +1,5 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
-index 404eb40..2ca7829 100644
+index 404eb40..1eace7f 100644
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
 @@ -17,6 +17,7 @@
@@ -10,7 +10,26 @@ index 404eb40..2ca7829 100644
  #include "com/com_pointer.hpp"
  #include "dxmt_format.hpp"
  
-@@ -1600,6 +1601,75 @@ public:
+@@ -601,16 +602,8 @@ public:
+       if (!kind)
+         continue;
+       auto &value = out[pRootSig->SlotQwordOffsets[i]];
+-      uint64_t base = 0, ir_base = 0;
+-      if (kind == 1 && heap_resources_) {
+-        base = heap_resources_->GPUBaseAddress;
+-        ir_base = heap_resources_->IRBaseAddress;
+-      } else if (kind == 2 && heap_samplers_) {
+-        base = heap_samplers_->GPUBaseAddress;
+-        ir_base = heap_samplers_->IRBaseAddress;
+-      }
+-      if (ir_base && value >= base)
+-        value = ir_base + (value - base) / 32 * 24;
++      if (value)
++        value = TranslateDescriptorTableAddress(value, kind == 2);
+     }
+     return Offset;
+   }
+@@ -1600,6 +1593,75 @@ public:
  
    void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
  
@@ -86,7 +105,7 @@ index 404eb40..2ca7829 100644
    void STDMETHODCALLTYPE ExecuteIndirect(
        ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
        UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
-@@ -1619,11 +1689,7 @@ public:
+@@ -1619,11 +1681,7 @@ public:
           pso_compute_->IsConvertedPipelineState) ||
          (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
           pso_graphics_->IsConvertedPipelineState)) {
@@ -113,10 +132,75 @@ index 0a046e2..1150699 100644
      if (is_compute)
        source
 diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
-index 754dfc1..809c0ab 100644
+index 754dfc1..a5a3e0b 100644
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
-@@ -169,7 +169,21 @@ public:
+@@ -18,6 +18,8 @@
+ 
+ #include "d3d12_device.hpp"
+ #include "d3d12_descriptor_heap.hpp"
++#include <map>
++#include "thread.hpp"
+ #include "d3d12_pageable.hpp"
+ #include "com/com_pointer.hpp"
+ #include "dxmt_sampler.hpp"
+@@ -82,6 +84,39 @@ IRBufferMetadata(uint64_t byte_length, uint32_t view_offset_in_elements, bool ty
+   return (byte_length & 0xffffffff) | ((uint64_t)(view_offset_in_elements & 0xff) << 32) | ((uint64_t)typed << 63);
+ }
+ 
++// Tas visibles par les shaders : adresse de début → (fin, adresse de la copie), par type.
++struct IRHeapRange {
++  uint64_t end;
++  uint64_t ir_base;
++};
++static dxmt::mutex ir_heaps_lock;
++static std::map<uint64_t, IRHeapRange> ir_heaps[2];
++
++static void
++RegisterIRHeap(bool sampler, uint64_t base, uint64_t count, uint64_t ir_base) {
++  std::unique_lock<dxmt::mutex> lock(ir_heaps_lock);
++  ir_heaps[sampler][base] = {base + count * 32, ir_base};
++}
++
++static void
++UnregisterIRHeap(bool sampler, uint64_t base) {
++  std::unique_lock<dxmt::mutex> lock(ir_heaps_lock);
++  ir_heaps[sampler].erase(base);
++}
++
++uint64_t
++TranslateDescriptorTableAddress(uint64_t Address, bool Sampler) {
++  std::unique_lock<dxmt::mutex> lock(ir_heaps_lock);
++  auto &heaps = ir_heaps[Sampler];
++  auto it = heaps.upper_bound(Address);
++  if (it == heaps.begin())
++    return 0;
++  --it;
++  if (Address >= it->second.end)
++    return 0;
++  return it->second.ir_base + (Address - it->first) / 32 * 24;
++}
++
+ inline uint64_t
+ TextureMetadata(uint32_t array_length, float min_lod) {
+   return ((uint64_t)array_length << 32) | (uint64_t)std::bit_cast<uint32_t>(min_lod);
+@@ -136,6 +171,7 @@ public:
+       GPUBaseAddress = argument_buffer_gpu_address_;
+       IRBaseAddress = ir_buffer_->current()->gpuAddress();
+       IRBuffer = ir_buffer_->current()->buffer();
++      RegisterIRHeap(false, GPUBaseAddress, descriptors_.size(), IRBaseAddress);
+     } else {
+       mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(
+           malloc(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage))
+@@ -148,6 +184,7 @@ public:
+ 
+   ~MTLD3D12DescriptorHeapImpl() {
+     if (buffer_) {
++      UnregisterIRHeap(false, GPUBaseAddress);
+       device_->UnregisterResidencyAndVA(buffer_->current());
+       device_->UnregisterResidencyAndVA(ir_buffer_->current());
+     } else {
+@@ -169,7 +206,21 @@ public:
      case ShaderVisibleDescriptorType::UAVTexture: {
        if (!cpu.SRVTexture.texture)
          break;
@@ -139,7 +223,7 @@ index 754dfc1..809c0ab 100644
        // Plancher de LOD (float) : les 32 bits bas des métadonnées de DXMT.
        entry.metadata = mapped_argument_buffer_[Index].SRVTexture.metadata & 0xffffffff;
        break;
-@@ -192,17 +206,16 @@ public:
+@@ -192,17 +243,16 @@ public:
        if (!texel.buffer)
          break;
        // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
@@ -165,6 +249,37 @@ index 754dfc1..809c0ab 100644
        break;
      }
      }
+@@ -596,6 +646,7 @@ public:
+       GPUBaseAddress = argument_buffer_gpu_address_;
+       IRBaseAddress = ir_buffer_->current()->gpuAddress();
+       IRBuffer = ir_buffer_->current()->buffer();
++      RegisterIRHeap(true, GPUBaseAddress, samplers_.size(), IRBaseAddress);
+     } else {
+       mapped_argument_buffer_ =
+           reinterpret_cast<SamplerGPUStorage *>(malloc(samplers_.size() * sizeof(SamplerGPUStorage)));
+@@ -607,6 +658,7 @@ public:
+ 
+   ~MTLD3D12SamplerDescriptorHeapImpl() {
+      if (buffer_) {
++      UnregisterIRHeap(true, GPUBaseAddress);
+       device_->UnregisterResidencyAndVA(buffer_->current());
+       device_->UnregisterResidencyAndVA(ir_buffer_->current());
+     } else {
+diff --git a/src/d3d12/d3d12_descriptor_heap.hpp b/src/d3d12/d3d12_descriptor_heap.hpp
+index 8aff3f7..da38ce1 100644
+--- a/src/d3d12/d3d12_descriptor_heap.hpp
++++ b/src/d3d12/d3d12_descriptor_heap.hpp
+@@ -192,4 +192,9 @@ public:
+   virtual void CopyDescriptors(UINT From, MTLD3D12RenderTargetDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
+ };
+ 
++/* Ambre : traduit l'adresse GPU d'une table de descripteurs (tas de DXMT, 32 octets par
++   descripteur) en adresse dans la copie au format du Metal Shader Converter (24 octets), quel que
++   soit le tas visible par les shaders d'où elle vient. 0 si l'adresse n'appartient à aucun tas. */
++uint64_t TranslateDescriptorTableAddress(uint64_t Address, bool Sampler);
++
+ } // namespace dxmt
+\ No newline at end of file
 diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
 index d1dfb5b..288e9a2 100644
 --- a/src/d3d12/d3d12_device.cpp
