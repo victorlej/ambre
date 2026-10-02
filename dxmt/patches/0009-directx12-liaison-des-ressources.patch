@@ -646,7 +646,7 @@ index 569ac45..d6b48ef 100644
    size_t NumStaticSamplers;
    uint64_t const *EncodedStaticSamplers;
 diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
-index 7059f61..2dd0caa 100644
+index 7059f61..74da38d 100644
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
 +++ b/src/d3d12/d3d12_pipeline_graphics.cpp
 @@ -28,6 +28,9 @@
@@ -659,6 +659,15 @@ index 7059f61..2dd0caa 100644
  #include "DXBCParser/BlobContainer.h"
  #include "DXBCParser/DXBCUtils.h"
  
+@@ -240,7 +243,7 @@ ExtractMTLInputLayoutElements(
+ static void
+ AmbreDumpDXIL(D3D12_SHADER_BYTECODE Bytecode) {
+   static const std::string folder = env::getEnvVar("AMBRE_DXIL_DUMP");
+-  if (folder.empty())
++  if (folder.empty() || !Bytecode.pShaderBytecode || !Bytecode.BytecodeLength)
+     return;
+   auto name = folder + "\\" + Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string() + ".dxil";
+   if (FILE *existing = fopen(name.c_str(), "rb")) {
 @@ -263,11 +266,36 @@ MTLD3D12PipelineState::IsDXIL(D3D12_SHADER_BYTECODE Bytecode) {
    return Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND;
  }
@@ -720,6 +729,30 @@ index 7059f61..2dd0caa 100644
      info.support_indirect_command_buffers = true;
  
      info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput;
+@@ -558,8 +594,21 @@ public:
+   InitializeConverted(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
+     if (pDesc->StreamOutput.NumEntries || pDesc->GS.pShaderBytecode || pDesc->HS.pShaderBytecode ||
+         pDesc->DS.pShaderBytecode) {
+-      ERR("ambre-dx12: pipeline DXIL avec GS, tessellation ou stream output : pas encore pris en charge");
+-      return E_NOTIMPL;
++      // Pas encore d'émulation (le convertisseur la fait avec des mesh shaders) : on note ce que
++      // le jeu demande, on enregistre les shaders, et on tente le pipeline sans ces étapes (dessin
++      // faux mais pas d'arrêt du jeu). Unreal 5 n'a plus de tessellation.
++      static std::atomic<uint32_t> reported = 0;
++      if (reported++ < 20)
++        WARN(
++            "ambre-dx12: pipeline DXIL avec GS=", pDesc->GS.pShaderBytecode ? 1 : 0,
++            " HS=", pDesc->HS.pShaderBytecode ? 1 : 0, " DS=", pDesc->DS.pShaderBytecode ? 1 : 0,
++            " SO=", pDesc->StreamOutput.NumEntries, " : etapes ignorees (pas encore emulees)"
++        );
++      AmbreDumpDXIL(pDesc->GS);
++      AmbreDumpDXIL(pDesc->HS);
++      AmbreDumpDXIL(pDesc->DS);
++      if (pDesc->HS.pShaderBytecode || pDesc->DS.pShaderBytecode)
++        return E_NOTIMPL;
+     }
+     if (pDesc->PS.pShaderBytecode && !IsDXIL(pDesc->PS)) {
+       ERR("ambre-dx12: shader de sommets DXIL avec shader de pixels DXBC");
 diff --git a/src/d3d12/d3d12_root_signature.cpp b/src/d3d12/d3d12_root_signature.cpp
 index abc2948..7ad86df 100644
 --- a/src/d3d12/d3d12_root_signature.cpp
