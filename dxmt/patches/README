@@ -6,6 +6,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0004 prise AMBRE_PRESENT_PLUGIN_DIR : module d'extension appelé à chaque image
 0005 image d'un module d'extension posée par-dessus le jeu (compteur d'Allia)
 0006 prise d'affichage AMBRE_FRAME_PLUGIN : un module macOS peut afficher l'image lui-même
+0007 DirectX 12 : diagnostic (AMBRE_DXIL_DUMP = dossier : Shader Model 6.6, niveau 12_1, atomiques
+     64 bits annoncés, shaders DXIL du jeu enregistrés ; inactif sans la variable) ; toujours actif :
+     horloge (GetTimestampFrequency, GetClockCalibration), Evict, EnqueueMakeResident,
+     SetResidencyPriority (mémoire unifiée, tout est résident)
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
