@@ -38,7 +38,7 @@ env:
   DXMT_VERSION: "0.80"
   # Ambre Metal : DXMT compilé par dxmt.yml (commit de l'auteur + dxmt/patches) ; DXMT_VERSION ne sert
   # plus qu'au téléchargement du paquet publié, remplacé ensuite.
-  DXMT_LABEL: "Ambre Metal (DXMT main e86484e)"
+  DXMT_LABEL: "Ambre Metal (DXMT main fb45156, DirectX 12 expérimental)"
   # Sans cela, les binaires porteraient la version de macOS du Mac de compilation et
   # refuseraient de se charger sur un macOS plus ancien.
   MACOSX_DEPLOYMENT_TARGET: "26.0"
