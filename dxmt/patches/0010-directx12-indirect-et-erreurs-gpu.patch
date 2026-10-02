@@ -113,10 +113,33 @@ index 0a046e2..1150699 100644
      if (is_compute)
        source
 diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
-index 754dfc1..cb16149 100644
+index 754dfc1..809c0ab 100644
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
-@@ -192,17 +192,16 @@ public:
+@@ -169,7 +169,21 @@ public:
+     case ShaderVisibleDescriptorType::UAVTexture: {
+       if (!cpu.SRVTexture.texture)
+         break;
+-      entry.texture_view_id = cpu.SRVTexture.texture->view(cpu.SRVTexture.view).gpuResourceID;
++      // Les shaders convertis lisent les textures 1D, 2D (multi-échantillons comprises) et cube
++      // comme des tableaux (texture2d_array…) : vue « tableau » de la même ressource.
++      auto texture = cpu.SRVTexture.texture;
++      auto view_key = cpu.SRVTexture.view;
++      switch (texture->textureType(view_key)) {
++      case WMTTextureType1D:
++      case WMTTextureType2D:
++      case WMTTextureType2DMultisample:
++      case WMTTextureTypeCube:
++        view_key = texture->checkViewUseArray(view_key, true);
++        break;
++      default:
++        break;
++      }
++      entry.texture_view_id = texture->view(view_key).gpuResourceID;
+       // Plancher de LOD (float) : les 32 bits bas des métadonnées de DXMT.
+       entry.metadata = mapped_argument_buffer_[Index].SRVTexture.metadata & 0xffffffff;
+       break;
+@@ -192,17 +206,16 @@ public:
        if (!texel.buffer)
          break;
        // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
