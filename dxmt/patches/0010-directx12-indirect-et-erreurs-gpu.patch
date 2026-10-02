@@ -1,5 +1,5 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
-index 404eb40..1eace7f 100644
+index 404eb40..ec2db18 100644
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
 @@ -17,6 +17,7 @@
@@ -10,7 +10,16 @@ index 404eb40..1eace7f 100644
  #include "com/com_pointer.hpp"
  #include "dxmt_format.hpp"
  
-@@ -601,16 +602,8 @@ public:
+@@ -373,6 +374,8 @@ public:
+ 
+     if (!pso_graphics_)
+       return DrawCallStatus::Invalid;
++    if (pso_graphics_->IsDisabledPipelineState)
++      return DrawCallStatus::Invalid; // Ambre : shader non converti, dessin sauté
+ 
+     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+@@ -601,16 +604,8 @@ public:
        if (!kind)
          continue;
        auto &value = out[pRootSig->SlotQwordOffsets[i]];
@@ -29,7 +38,16 @@ index 404eb40..1eace7f 100644
      }
      return Offset;
    }
-@@ -1600,6 +1593,75 @@ public:
+@@ -685,6 +680,8 @@ public:
+ 
+     if (!pso_compute_)
+         return false;
++    if (pso_compute_->IsDisabledPipelineState)
++      return false; // Ambre : shader non converti, calcul sauté
+ 
+     if (dirty_state_.test(DirtyState::ComputePipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+@@ -1600,6 +1597,75 @@ public:
  
    void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
  
@@ -105,7 +123,7 @@ index 404eb40..1eace7f 100644
    void STDMETHODCALLTYPE ExecuteIndirect(
        ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
        UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
-@@ -1619,11 +1681,7 @@ public:
+@@ -1619,11 +1685,7 @@ public:
           pso_compute_->IsConvertedPipelineState) ||
          (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
           pso_graphics_->IsConvertedPipelineState)) {
@@ -471,7 +489,7 @@ index d1dfb5b..288e9a2 100644
          auto size_and_align = GetMTLDevice().heapTextureSizeAndAlign(texture_info);
          resource_info.SizeInBytes = size_and_align.size;
 diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
-index d6b48ef..953edcb 100644
+index d6b48ef..79d1827 100644
 --- a/src/d3d12/d3d12_device.hpp
 +++ b/src/d3d12/d3d12_device.hpp
 @@ -120,6 +120,10 @@ public:
@@ -485,6 +503,68 @@ index d6b48ef..953edcb 100644
  
    WMT::Reference<WMT::RenderPipelineState> render_resolver;
    WMT::Reference<WMT::ComputePipelineState> compute_resolver;
+@@ -138,6 +142,9 @@ public:
+   /* Ambre : pipeline aux shaders DXIL convertis par le Metal Shader Converter (modèle de
+      liaison du convertisseur, différent de celui d'airconv). */
+   UINT IsConvertedPipelineState = 0;
++  /* Ambre : shader impossible à convertir → pipeline « désactivé » : créé pour que le jeu continue
++     (Unreal s'arrête sinon), mais ses dessins et calculs sont sautés. */
++  UINT IsDisabledPipelineState = 0;
+ 
+   static HRESULT
+   InitializeShader(D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl);
+diff --git a/src/d3d12/d3d12_pipeline_compute.cpp b/src/d3d12/d3d12_pipeline_compute.cpp
+index 40c7cf0..b30112a 100644
+--- a/src/d3d12/d3d12_pipeline_compute.cpp
++++ b/src/d3d12/d3d12_pipeline_compute.cpp
+@@ -41,8 +41,12 @@ public:
+       WMTIRReflection reflection{};
+       WMT::Reference<WMT::Function> cs_func;
+       if (HRESULT hr = ConvertDXIL(device_, pDesc->CS, pDesc->pRootSignature, 0, false, cs_func, reflection);
+-          FAILED(hr))
+-        return hr;
++          FAILED(hr)) {
++        WARN("ambre-dx12: pipeline de calcul desactive (ses calculs seront sautes)");
++        IsConvertedPipelineState = 1;
++        IsDisabledPipelineState = 1;
++        return S_OK;
++      }
+       threadgroup_size = {reflection.threadgroup_size[0], reflection.threadgroup_size[1],
+                           reflection.threadgroup_size[2]};
+       WMT::Reference<WMT::Error> err;
+@@ -53,7 +57,7 @@ public:
+       pso = device_->GetMTLDevice().newComputePipelineState(info, err);
+       if (!pso) {
+         ERR("ambre-dx12: pipeline de calcul refuse par Metal : ", err.description().getUTF8String());
+-        return E_FAIL;
++        IsDisabledPipelineState = 1;
+       }
+       IsConvertedPipelineState = 1;
+       return S_OK;
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 74da38d..36144bb 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -717,8 +717,17 @@ public:
+ 
+   virtual HRESULT
+   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
+-    if (IsDXIL(pDesc->VS))
+-      return InitializeConverted(pDesc);
++    if (IsDXIL(pDesc->VS)) {
++      HRESULT hr = InitializeConverted(pDesc);
++      if (FAILED(hr)) {
++        WARN("ambre-dx12: pipeline de rendu desactive (ses dessins seront sautes)");
++        InitializeDSSO(pDesc);
++        InitializeRasterizerState(pDesc);
++        IsConvertedPipelineState = 1;
++        IsDisabledPipelineState = 1;
++      }
++      return S_OK;
++    }
+ 
+     if (pDesc->StreamOutput.NumEntries) {
+       ERR("CreatePipelineState: SO not supported");
 diff --git a/src/dxmt/dxmt_buffer.cpp b/src/dxmt/dxmt_buffer.cpp
 index 9a4139d..e77add4 100644
 --- a/src/dxmt/dxmt_buffer.cpp

@@ -25,7 +25,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      Windows (sinon l'allocateur transitoire d'Unreal reçoit null) ; validation de Metal à la
      demande (fichier Allia/Logs/metal-validation) ; vues « tableau » des textures 1D/2D/cube pour
      les shaders convertis ; adresses de tables traduites quel que soit le tas d'origine ; compteurs
-     de UAV (vue R32Uint du compteur) pour les shaders convertis
+     de UAV (vue R32Uint du compteur) pour les shaders convertis ; pipeline « désactivé » (dessins
+     sautés) si un shader ne peut pas être converti, au lieu d'arrêter le jeu
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
