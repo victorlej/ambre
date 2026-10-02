@@ -1,0 +1,18 @@
+diff --git a/dlls/winecoreaudio.drv/authorization.m b/dlls/winecoreaudio.drv/authorization.m
+index bcdb5a3b..3da0559e 100644
+--- a/dlls/winecoreaudio.drv/authorization.m
++++ b/dlls/winecoreaudio.drv/authorization.m
+@@ -91,7 +91,12 @@ int CoreAudio_request_capture_authorization(void)
+             ret = granted ? 1 : 0;
+         }];
+ 
+-        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
++        /* Ambre : 2 s au plus. Si macOS ne peut pas afficher sa demande (programme lancé en
++         * arrière-plan, app sans phrase d'usage du micro…), la réponse ne vient jamais et le jeu
++         * restait figé (How to Fish, oct. 2026). Sans réponse : on continue sans micro. Le bloc
++         * garde une référence au sémaphore, qui reste valable s'il répond plus tard. */
++        if (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)))
++            ret = 0;
+         dispatch_release(semaphore);
+         [[NSNotificationCenter defaultCenter] postNotificationName:WineDidShowPermissionDialogNotification
+                                                             object:nil];
