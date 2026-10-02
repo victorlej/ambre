@@ -657,7 +657,7 @@ index 057e767..ea300f2 100644
    constexpr BufferAllocation *
    current() {
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index d4d1c87..70d519f 100644
+index d4d1c87..bb68028 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
 @@ -1,5 +1,6 @@
@@ -667,13 +667,21 @@ index d4d1c87..70d519f 100644
  #import <Cocoa/Cocoa.h>
  #import <ColorSync/ColorSync.h>
  #import <CoreFoundation/CFRunLoop.h>
-@@ -113,6 +114,16 @@ _MTLCommandQueue_commandBuffer(void *obj) {
+@@ -113,6 +114,24 @@ _MTLCommandQueue_commandBuffer(void *obj) {
  static NTSTATUS
  _MTLCommandBuffer_commit(void *obj) {
    struct unixcall_generic_obj_noret *params = obj;
 +  /* Ambre : erreurs de la carte graphique écrites dans le journal (sinon invisibles). */
 +  static atomic_int ambre_gpu_errors = 0;
 +  [(id<MTLCommandBuffer>)params->handle addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
++    /* Ambre : commandes très longues sur la carte graphique (jeu figé : calcul interminable ?). */
++    static atomic_int ambre_gpu_slow = 0;
++    double gpu_time = buffer.GPUEndTime - buffer.GPUStartTime;
++    if (gpu_time > 0.25) {
++      int slow = atomic_fetch_add(&ambre_gpu_slow, 1) + 1;
++      if (slow <= 30 || slow % 100 == 0)
++        fprintf(stderr, "ambre-gpu: commandes longues n°%d : %.0f ms sur la carte graphique\n", slow, gpu_time * 1000);
++    }
 +    if (buffer.status != MTLCommandBufferStatusError)
 +      return;
 +    int count = atomic_fetch_add(&ambre_gpu_errors, 1) + 1;
@@ -684,7 +692,7 @@ index d4d1c87..70d519f 100644
    [(id<MTLCommandBuffer>)params->handle commit];
    return STATUS_SUCCESS;
  }
-@@ -518,6 +529,27 @@ MTLMeshRenderPipelineDescriptor ()
+@@ -518,6 +537,27 @@ MTLMeshRenderPipelineDescriptor ()
  
  #endif
  
