@@ -10,6 +10,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      64 bits annoncés, shaders DXIL du jeu enregistrés ; inactif sans la variable) ; toujours actif :
      horloge (GetTimestampFrequency, GetClockCalibration), Evict, EnqueueMakeResident,
      SetResidencyPriority (mémoire unifiée, tout est résident)
+0008 DirectX 12, étape 1 (docs/directx12.md) : shaders DXIL convertis par le Metal Shader Converter
+     d'Apple (libmetalirconverter.dylib chargée à la demande par winemetal ; en-têtes Apache 2.0
+     dans src/winemetal/unix/metal_irconverter), pipelines de calcul et de rendu (descripteur de
+     sommets Metal à pas dynamique) ; dessins avec ces pipelines encore sautés (liaison : étape 2)
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
