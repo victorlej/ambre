@@ -149,6 +149,7 @@ cat > "${game}/Info.plist" <<PLIST
   <key>LSSupportsGameMode</key><true/>
   <key>LSUIElement</key><true/>
   <key>NSAppSleepDisabled</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Certains jeux utilisent le micro pour le chat vocal. Sans ton accord, le jeu continue sans micro.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
