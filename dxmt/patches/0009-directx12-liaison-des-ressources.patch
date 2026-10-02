@@ -645,6 +645,81 @@ index 569ac45..d6b48ef 100644
  
    size_t NumStaticSamplers;
    uint64_t const *EncodedStaticSamplers;
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 7059f61..2dd0caa 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -28,6 +28,9 @@
+ #include <atomic>
+ #include <string>
+ #include <strings.h>
++#include <memory>
++#include <unordered_map>
++#include "thread.hpp"
+ #include "DXBCParser/BlobContainer.h"
+ #include "DXBCParser/DXBCUtils.h"
+ 
+@@ -263,11 +266,36 @@ MTLD3D12PipelineState::IsDXIL(D3D12_SHADER_BYTECODE Bytecode) {
+   return Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND;
+ }
+ 
++// Ambre : un même shader revient dans beaucoup de pipelines (Unreal en crée des milliers) :
++// chaque conversion n'est faite qu'une fois par partie.
++struct ConvertedShader {
++  WMT::Reference<WMT::Function> function;
++  WMTIRReflection reflection;
++};
++static dxmt::mutex converted_cache_lock;
++static std::unordered_map<std::string, std::shared_ptr<ConvertedShader>> converted_cache;
++
+ HRESULT
+ MTLD3D12PipelineState::ConvertDXIL(
+     MTLD3D12Device *pDevice, D3D12_SHADER_BYTECODE Bytecode, ID3D12RootSignature *pRootSignature, uint32_t IntRTMask,
+     bool DualSourceBlending, WMT::Reference<WMT::Function> &Function, WMTIRReflection &Reflection
+ ) {
++  std::string key = Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string();
++  if (pRootSignature) {
++    const void *blob;
++    UINT size = static_cast<MTLD3D12RootSignature *>(pRootSignature)->GetBlob(&blob);
++    key += Sha1HashState::compute(blob, size).string();
++  }
++  key += "/" + std::to_string(IntRTMask) + "/" + std::to_string(DualSourceBlending);
++  {
++    std::unique_lock<dxmt::mutex> lock(converted_cache_lock);
++    auto found = converted_cache.find(key);
++    if (found != converted_cache.end()) {
++      Function = found->second->function;
++      Reflection = found->second->reflection;
++      return S_OK;
++    }
++  }
+   AmbreDumpDXIL(Bytecode);
+   WMTIRCompileInfo info{};
+   info.dxil.set(Bytecode.pShaderBytecode);
+@@ -290,6 +318,13 @@ MTLD3D12PipelineState::ConvertDXIL(
+     ERR("ambre-dx12: fonction ", Reflection.entry_point, " absente du shader converti");
+     return E_FAIL;
+   }
++  {
++    auto entry = std::make_shared<ConvertedShader>();
++    entry->function = Function;
++    entry->reflection = Reflection;
++    std::unique_lock<dxmt::mutex> lock(converted_cache_lock);
++    converted_cache.emplace(key, std::move(entry));
++  }
+   static std::atomic<uint32_t> converted = 0;
+   auto count = ++converted;
+   if (count == 1 || count % 500 == 0)
+@@ -427,7 +462,8 @@ public:
+       }
+     }
+ 
+-    info.raster_sample_count = pDesc->SampleDesc.Count;
++    // Ambre : Unreal envoie parfois 0 (= 1 échantillon) ; Metal refuse 0.
++    info.raster_sample_count = std::max(pDesc->SampleDesc.Count, 1u);
+     info.support_indirect_command_buffers = true;
+ 
+     info.alpha_to_coverage_enabled = pDesc->BlendState.AlphaToCoverageEnable && !ref_ps.PixelShader.HasCoverageOutput;
 diff --git a/src/d3d12/d3d12_root_signature.cpp b/src/d3d12/d3d12_root_signature.cpp
 index abc2948..7ad86df 100644
 --- a/src/d3d12/d3d12_root_signature.cpp
@@ -676,7 +751,7 @@ index abc2948..7ad86df 100644
    }
  
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index 5d04377..55afc55 100644
+index 5d04377..8a8fb49 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
 @@ -980,6 +980,14 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
@@ -694,6 +769,26 @@ index 5d04377..55afc55 100644
      case WMTRenderCommandSetVertexBufferOffset: {
        struct wmtcmd_render_setbufferoffset *body = (struct wmtcmd_render_setbufferoffset *)next;
        [encoder setVertexBufferOffset:body->offset atIndex:body->index];
+@@ -3360,10 +3368,16 @@ _IRConverter_newLibrary(void *obj) {
+   }
+ 
+   input = ambre_ir.IRObjectCreateFromDXIL(info->dxil.ptr, info->dxil_size, IRBytecodeOwnershipNone);
+-  /* Le convertisseur n'est pas garanti sûr entre fils : une conversion à la fois. */
+-  pthread_mutex_lock(&ambre_ir_lock);
++  /* Un IRCompiler par conversion : plusieurs conversions en parallèle (AMBRE_IRCONVERTER_SERIAL=1
++     les remet une par une, au cas où). */
++  static int serial = -1;
++  if (serial < 0)
++    serial = getenv("AMBRE_IRCONVERTER_SERIAL") && atoi(getenv("AMBRE_IRCONVERTER_SERIAL"));
++  if (serial)
++    pthread_mutex_lock(&ambre_ir_lock);
+   output = ambre_ir.IRCompilerAllocCompileAndLink(compiler, NULL, input, &ir_error);
+-  pthread_mutex_unlock(&ambre_ir_lock);
++  if (serial)
++    pthread_mutex_unlock(&ambre_ir_lock);
+   if (!output) {
+     if (error && error_size)
+       snprintf(error, error_size, "conversion refusee (code %u)", ir_error ? ambre_ir.IRErrorGetCode(ir_error) : 0);
 diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
 index bec4066..d96b6f4 100644
 --- a/src/winemetal/winemetal.h
