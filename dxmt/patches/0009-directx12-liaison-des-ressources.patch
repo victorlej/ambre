@@ -1,0 +1,726 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index cadd6bb..404eb40 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -149,6 +149,11 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+   FLOAT blend_factor_[4];
+   UINT8 stencil_ref_;
+ 
++  // Ambre : tas liés par SetDescriptorHeaps, pour les pipelines DXIL convertis par le Metal
++  // Shader Converter (adresses de tables traduites vers les tas miroirs au format d'Apple).
++  MTLD3D12DescriptorHeap *heap_resources_ = nullptr;
++  MTLD3D12SamplerDescriptorHeap *heap_samplers_ = nullptr;
++
+ public:
+   MTLD3D12GraphicsCommandListImpl(MTLD3D12Device *pDevice) : MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList>(pDevice) {}
+ 
+@@ -183,6 +188,9 @@ public:
+     blend_factor_[3] = 1.0f;
+     stencil_ref_ = 0;
+ 
++    heap_resources_ = nullptr;
++    heap_samplers_ = nullptr;
++
+     rootsig_graphics_ = nullptr;
+     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
+ 
+@@ -365,10 +373,6 @@ public:
+ 
+     if (!pso_graphics_)
+       return DrawCallStatus::Invalid;
+-    // Ambre, étape 1 du DirectX 12 : les pipelines convertis (DXIL) existent mais leurs
+-    // ressources ne sont pas encore liées comme l'attend le Metal Shader Converter → dessin sauté.
+-    if (pso_graphics_->IsConvertedPipelineState)
+-      return DrawCallStatus::Invalid;
+ 
+     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+@@ -394,50 +398,86 @@ public:
+ 
+       dirty_state_.clr(DirtyState::GraphicsPipelineState);
+     }
+-    if (dirty_state_.test(DirtyState::VertexBuffer)) {
+-      auto [Offset, Stride] = PopulateVertexBufferTable(1);
+-      if (Stride) {
+-        auto &cmd_vsvb = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+-        cmd_vsvb.type = WMTRenderCommandSetVertexBuffer;
+-        cmd_vsvb.buffer = allocator_->gpu_heap_buffer_;
+-        cmd_vsvb.offset = Offset;
+-        cmd_vsvb.index = SM50_BINDING_INDEX_VERTEX_BUFFER;
++    if (pso_graphics_->IsConvertedPipelineState) {
++      // Ambre : pipeline DXIL converti (Metal Shader Converter).
++      if (dirty_state_.test(DirtyState::VertexBuffer)) {
++        auto slot_mask = pso_graphics_->slot_mask;
++        for (unsigned slot = 0; slot < 32 && slot_mask; slot++) {
++          if (!(slot_mask & (1u << slot)))
++            continue;
++          slot_mask &= ~(1u << slot);
++          auto &view = vertex_buffers_[slot];
++          uint64_t offset = 0;
++          auto allocation = view.BufferLocation ? device_->LookupBufferByVA(view.BufferLocation, &offset) : nullptr;
++          if (!allocation)
++            continue;
++          auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setbufferwithstride>();
++          cmd.type = WMTRenderCommandSetVertexBufferWithStride;
++          cmd.buffer = allocation->buffer().handle;
++          cmd.offset = offset;
++          cmd.stride = view.StrideInBytes;
++          cmd.index = 6 + slot;
++        }
++        dirty_state_.clr(DirtyState::VertexBuffer);
++      }
++      if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
++        BindConvertedArguments(
++            rootsig_graphics_.ptr(), rootarg_graphics_staging_,
++            [&](obj_handle_t buffer, uint64_t offset, uint8_t index) {
++              EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, buffer, offset, index);
++              EncodeConvertedRenderBuffer(WMTRenderCommandSetFragmentBuffer, buffer, offset, index);
++            }
++        );
++        dirty_state_.clr(DirtyState::GraphicsRootArguments);
++      }
++      // Échantillonneurs statiques : intégrés au shader par le convertisseur.
++      dirty_state_.clr(DirtyState::GraphicsRootSignature);
++    } else {
++      if (dirty_state_.test(DirtyState::VertexBuffer)) {
++        auto [Offset, Stride] = PopulateVertexBufferTable(1);
++        if (Stride) {
++          auto &cmd_vsvb = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++          cmd_vsvb.type = WMTRenderCommandSetVertexBuffer;
++          cmd_vsvb.buffer = allocator_->gpu_heap_buffer_;
++          cmd_vsvb.offset = Offset;
++          cmd_vsvb.index = SM50_BINDING_INDEX_VERTEX_BUFFER;
++        }
++        dirty_state_.clr(DirtyState::VertexBuffer);
+       }
+-      dirty_state_.clr(DirtyState::VertexBuffer);
+-    }
+ 
+-    if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
+-      if (rootsig_graphics_) {
+-        auto Offset = EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
+-        auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+-        cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
+-        cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
+-        cmd_vsargbuf.offset = Offset;
+-        cmd_vsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+-        auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+-        cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
+-        cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
+-        cmd_fsargbuf.offset = Offset;
+-        cmd_fsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
++      if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
++        if (rootsig_graphics_) {
++          auto Offset = EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
++          auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++          cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
++          cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
++          cmd_vsargbuf.offset = Offset;
++          cmd_vsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
++          auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++          cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
++          cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
++          cmd_fsargbuf.offset = Offset;
++          cmd_fsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
++        }
++        dirty_state_.clr(DirtyState::GraphicsRootArguments);
+       }
+-      dirty_state_.clr(DirtyState::GraphicsRootArguments);
+-    }
+ 
+-    if (dirty_state_.test(DirtyState::GraphicsRootSignature) && !SkipResourceBinding) {
+-      if (rootsig_graphics_) {
+-        auto Offset = EncodeStaticSamplers(rootsig_graphics_.ptr());
+-        auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+-        cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
+-        cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
+-        cmd_vsargbuf.offset = Offset;
+-        cmd_vsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
+-        auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+-        cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
+-        cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
+-        cmd_fsargbuf.offset = Offset;
+-        cmd_fsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
++      if (dirty_state_.test(DirtyState::GraphicsRootSignature) && !SkipResourceBinding) {
++        if (rootsig_graphics_) {
++          auto Offset = EncodeStaticSamplers(rootsig_graphics_.ptr());
++          auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++          cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
++          cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
++          cmd_vsargbuf.offset = Offset;
++          cmd_vsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
++          auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++          cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
++          cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
++          cmd_fsargbuf.offset = Offset;
++          cmd_fsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
++        }
++        dirty_state_.clr(DirtyState::GraphicsRootSignature);
+       }
+-      dirty_state_.clr(DirtyState::GraphicsRootSignature);
+     }
+ 
+     if (dirty_state_.test(DirtyState::Viewport)) {
+@@ -505,6 +545,10 @@ public:
+     if (status == DrawCallStatus::Invalid)
+       return;
+ 
++    if (pso_graphics_->IsConvertedPipelineState) {
++      uint32_t params[4] = {VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
++      EncodeConvertedDrawParams(params, sizeof(params), 0, primitive_type);
++    }
+     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
+     cmd_draw.type = WMTRenderCommandDraw;
+     cmd_draw.primitive_type = primitive_type;
+@@ -526,6 +570,11 @@ public:
+     DrawCallStatus status = PreDraw();
+     if (status == DrawCallStatus::Invalid)
+       return;
++    if (pso_graphics_->IsConvertedPipelineState) {
++      uint32_t params[5] = {IndexCountPerInstance, InstanceCount, StartVertexLocation, (uint32_t)BaseVertexLocation,
++                            StartInstanceLocation};
++      EncodeConvertedDrawParams(params, sizeof(params), index_type == WMTIndexTypeUInt32 ? 2 : 1, primitive_type);
++    }
+     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed>();
+     cmd_draw.type = WMTRenderCommandDrawIndexed;
+     cmd_draw.primitive_type = primitive_type;
+@@ -538,6 +587,70 @@ public:
+     cmd_draw.base_instance = StartInstanceLocation;
+   };
+ 
++  // Ambre : arguments racine au format du Metal Shader Converter. Même disposition que DXMT
++  // (un mot de 64 bits par table ou descripteur racine, constantes par paires) ; seules les
++  // adresses de tables changent : tas de DXMT (32 octets) → tas miroir (24 octets).
++  uint64_t
++  EncodeConvertedRootArgument(MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64]) {
++    auto qwords = std::max(pRootSig->UploadQwords, 1u);
++    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t) * qwords, 64);
++    auto out = reinterpret_cast<uint64_t *>(Ptr);
++    memcpy(out, pStaging, pRootSig->UploadQwords * sizeof(uint64_t));
++    for (unsigned i = 0; i < pRootSig->ParameterSlots; i++) {
++      auto kind = pRootSig->SlotTableKinds[i];
++      if (!kind)
++        continue;
++      auto &value = out[pRootSig->SlotQwordOffsets[i]];
++      uint64_t base = 0, ir_base = 0;
++      if (kind == 1 && heap_resources_) {
++        base = heap_resources_->GPUBaseAddress;
++        ir_base = heap_resources_->IRBaseAddress;
++      } else if (kind == 2 && heap_samplers_) {
++        base = heap_samplers_->GPUBaseAddress;
++        ir_base = heap_samplers_->IRBaseAddress;
++      }
++      if (ir_base && value >= base)
++        value = ir_base + (value - base) / 32 * 24;
++    }
++    return Offset;
++  }
++
++  // Tas miroirs aux index 0 (CBV/SRV/UAV, ResourceDescriptorHeap du Shader Model 6.6) et 1
++  // (échantillonneurs), arguments racine à l'index 2.
++  template <typename SetBuffer>
++  void
++  BindConvertedArguments(MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64], SetBuffer set_buffer) {
++    if (pRootSig)
++      set_buffer(allocator_->gpu_heap_buffer_.handle, EncodeConvertedRootArgument(pRootSig, pStaging), 2);
++    if (heap_resources_ && heap_resources_->IRBuffer.handle)
++      set_buffer(heap_resources_->IRBuffer.handle, 0, 0);
++    if (heap_samplers_ && heap_samplers_->IRBuffer.handle)
++      set_buffer(heap_samplers_->IRBuffer.handle, 0, 1);
++  }
++
++  void
++  EncodeConvertedRenderBuffer(WMTRenderCommandType Type, obj_handle_t Buffer, uint64_t Offset, uint8_t Index) {
++    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
++    cmd.type = Type;
++    cmd.buffer = Buffer;
++    cmd.offset = Offset;
++    cmd.index = Index;
++  }
++
++  // Paramètres de dessin lus par les shaders de sommets convertis (SV_VertexID, SV_InstanceID) :
++  // IRRuntimeDrawParams à l'index 4, IRRuntimeDrawInfo à l'index 5.
++  void
++  EncodeConvertedDrawParams(const void *Params, size_t Size, uint16_t IndexType, WMTPrimitiveType Primitive) {
++    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(64, 16);
++    memset(Ptr, 0, 64);
++    memcpy(Ptr, Params, Size);
++    auto info = reinterpret_cast<uint8_t *>(Ptr) + 32;
++    memcpy(info, &IndexType, sizeof(IndexType));
++    info[2] = (uint8_t)Primitive;
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, allocator_->gpu_heap_buffer_.handle, Offset, 4);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, allocator_->gpu_heap_buffer_.handle, Offset + 32, 5);
++  }
++
+   uint64_t
+   EncodeRootArgument(MTLD3D12RootSignature *pRootSig, uint64_t const pStaging[64], UINT Count = 1) {
+     auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(uint64_t) * pRootSig->UploadQwords * Count, 64);
+@@ -572,8 +685,6 @@ public:
+ 
+     if (!pso_compute_)
+         return false;
+-    if (pso_compute_->IsConvertedPipelineState)
+-      return false; // Ambre, étape 1 : voir PreDraw
+ 
+     if (dirty_state_.test(DirtyState::ComputePipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+@@ -583,6 +694,25 @@ public:
+       dirty_state_.clr(DirtyState::ComputePipelineState);
+     }
+ 
++    if (pso_compute_->IsConvertedPipelineState) {
++      // Ambre : pipeline DXIL converti (Metal Shader Converter).
++      if (dirty_state_.test(DirtyState::ComputeRootArguments) && !SkipResourceBinding) {
++        BindConvertedArguments(
++            rootsig_compute_.ptr(), rootarg_compute_staging_,
++            [&](obj_handle_t buffer, uint64_t offset, uint8_t index) {
++              auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
++              cmd.type = WMTComputeCommandSetBuffer;
++              cmd.buffer = buffer;
++              cmd.offset = offset;
++              cmd.index = index;
++            }
++        );
++        dirty_state_.clr(DirtyState::ComputeRootArguments);
++      }
++      dirty_state_.clr(DirtyState::ComputeRootSignature);
++      return true;
++    }
++
+     if (dirty_state_.test(DirtyState::ComputeRootArguments) && !SkipResourceBinding) {
+       if (rootsig_compute_) {
+         auto Offset = EncodeRootArgument(rootsig_compute_.ptr(), rootarg_compute_staging_);
+@@ -1015,6 +1145,7 @@ public:
+       pso_compute_ = compute_pso;
+       pso_graphics_ = nullptr;
+       dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::ComputePipelineState);
++      dirty_state_.set(DirtyState::ComputeRootArguments, DirtyState::ComputeRootSignature);
+       return;
+     }
+ 
+@@ -1024,6 +1155,7 @@ public:
+     pso_graphics_ = graphics_pso;
+     pso_compute_ = nullptr;
+     dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::ComputePipelineState, DirtyState::VertexBuffer);
++    dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature);
+   };
+ 
+   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+@@ -1034,7 +1166,19 @@ public:
+   void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) { IMPLEMENT_ME };
+ 
+   void STDMETHODCALLTYPE SetDescriptorHeaps(UINT HeapCount, ID3D12DescriptorHeap *const *Heaps) {
+-    // no need to do anything here because because we encode the full descriptor table address in root argument
++    // DXMT encode l'adresse complète des tables dans les arguments racine ; Ambre garde les tas
++    // pour traduire ces adresses vers le format du Metal Shader Converter.
++    for (unsigned i = 0; i < HeapCount; i++) {
++      if (!Heaps || !Heaps[i])
++        continue;
++      D3D12_DESCRIPTOR_HEAP_DESC desc;
++      Heaps[i]->GetDesc(&desc);
++      if (desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
++        heap_resources_ = static_cast<MTLD3D12DescriptorHeap *>(Heaps[i]);
++      else if (desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
++        heap_samplers_ = static_cast<MTLD3D12SamplerDescriptorHeap *>(Heaps[i]);
++    }
++    dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::ComputeRootArguments);
+   };
+ 
+   void STDMETHODCALLTYPE
+@@ -1471,6 +1615,17 @@ public:
+         return;
+       CountBufferAddress = count_buffer->buffer->current()->gpuAddress() + CountBufferOffset;
+     }
++    if ((sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_compute_ &&
++         pso_compute_->IsConvertedPipelineState) ||
++        (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
++         pso_graphics_->IsConvertedPipelineState)) {
++      static bool warned = false;
++      if (!warned) {
++        warned = true;
++        WARN("ambre-dx12: ExecuteIndirect avec un pipeline DXIL : pas encore pris en charge (saute)");
++      }
++      return;
++    }
+     if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+       if (!PreDispatch(sig->UpdateRootArguments))
+         return;
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 18e2760..754dfc1 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -67,6 +67,21 @@ struct ShaderVisibleDescriptorGPUStorage {
+ 
+ static_assert(sizeof(ShaderVisibleDescriptorGPUStorage) == 32);
+ 
++// Ambre : entrée de tas au format du Metal Shader Converter (IRDescriptorTableEntry).
++struct IRDescriptorEntry {
++  uint64_t gpu_va;
++  uint64_t texture_view_id;
++  uint64_t metadata;
++};
++static_assert(sizeof(IRDescriptorEntry) == 24);
++
++// Métadonnées d'un tampon pour le convertisseur : taille (32 bits), décalage de la vue en
++// éléments (8 bits, à partir du bit 32), tampon typé (bit 63).
++inline uint64_t
++IRBufferMetadata(uint64_t byte_length, uint32_t view_offset_in_elements, bool typed) {
++  return (byte_length & 0xffffffff) | ((uint64_t)(view_offset_in_elements & 0xff) << 32) | ((uint64_t)typed << 63);
++}
++
+ inline uint64_t
+ TextureMetadata(uint32_t array_length, float min_lod) {
+   return ((uint64_t)array_length << 32) | (uint64_t)std::bit_cast<uint32_t>(min_lod);
+@@ -80,6 +95,8 @@ class MTLD3D12DescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12DescriptorHea
+   Rc<Buffer> buffer_;
+   ShaderVisibleDescriptorGPUStorage *mapped_argument_buffer_ = nullptr;
+   uint64_t argument_buffer_gpu_address_ = 0;
++  Rc<Buffer> ir_buffer_;
++  IRDescriptorEntry *mapped_ir_ = nullptr;
+ 
+ public:
+   MTLD3D12DescriptorHeapImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12DescriptorHeap>(pDevice) {}
+@@ -110,10 +127,20 @@ public:
+           reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(buffer_->current()->mappedMemory(0));
+       argument_buffer_gpu_address_ = buffer_->current()->gpuAddress();
+       device_->RegisterResidencyAndVA(buffer_->current());
++
++      ir_buffer_ = new Buffer(descriptors_.size() * sizeof(IRDescriptorEntry), device_->GetMTLDevice());
++      ir_buffer_->rename(ir_buffer_->allocate(flags));
++      mapped_ir_ = reinterpret_cast<IRDescriptorEntry *>(ir_buffer_->current()->mappedMemory(0));
++      memset(mapped_ir_, 0, descriptors_.size() * sizeof(IRDescriptorEntry));
++      device_->RegisterResidencyAndVA(ir_buffer_->current());
++      GPUBaseAddress = argument_buffer_gpu_address_;
++      IRBaseAddress = ir_buffer_->current()->gpuAddress();
++      IRBuffer = ir_buffer_->current()->buffer();
+     } else {
+       mapped_argument_buffer_ = reinterpret_cast<ShaderVisibleDescriptorGPUStorage *>(
+           malloc(descriptors_.size() * sizeof(ShaderVisibleDescriptorGPUStorage))
+       );
++      mapped_ir_ = reinterpret_cast<IRDescriptorEntry *>(calloc(descriptors_.size(), sizeof(IRDescriptorEntry)));
+     }
+ 
+     return S_OK;
+@@ -122,8 +149,62 @@ public:
+   ~MTLD3D12DescriptorHeapImpl() {
+     if (buffer_) {
+       device_->UnregisterResidencyAndVA(buffer_->current());
++      device_->UnregisterResidencyAndVA(ir_buffer_->current());
+     } else {
+       free(mapped_argument_buffer_);
++      free(mapped_ir_);
++    }
++  }
++
++  // Ambre : met à jour l'entrée au format du Metal Shader Converter d'après le descripteur.
++  void
++  UpdateIR(UINT Index) {
++    auto &entry = mapped_ir_[Index];
++    auto &cpu = descriptors_[Index];
++    entry = {};
++    switch (cpu.type) {
++    case ShaderVisibleDescriptorType::Null:
++      break;
++    case ShaderVisibleDescriptorType::SRVTexture:
++    case ShaderVisibleDescriptorType::UAVTexture: {
++      if (!cpu.SRVTexture.texture)
++        break;
++      entry.texture_view_id = cpu.SRVTexture.texture->view(cpu.SRVTexture.view).gpuResourceID;
++      // Plancher de LOD (float) : les 32 bits bas des métadonnées de DXMT.
++      entry.metadata = mapped_argument_buffer_[Index].SRVTexture.metadata & 0xffffffff;
++      break;
++    }
++    case ShaderVisibleDescriptorType::ConstantBuffer:
++      entry.gpu_va = cpu.ConstantBuffer.address;
++      entry.metadata = IRBufferMetadata(cpu.ConstantBuffer.size, 0, false);
++      break;
++    case ShaderVisibleDescriptorType::UAVBuffer:
++    case ShaderVisibleDescriptorType::SRVBuffer: {
++      if (!cpu.UAVBuffer.buffer)
++        break;
++      entry.gpu_va = cpu.UAVBuffer.buffer->current()->gpuAddress() + cpu.UAVBuffer.slice.byteOffset;
++      entry.metadata = IRBufferMetadata(cpu.UAVBuffer.slice.byteLength, 0, false);
++      break;
++    }
++    case ShaderVisibleDescriptorType::UAVTexelBuffer:
++    case ShaderVisibleDescriptorType::SRVTexelBuffer: {
++      auto &texel = cpu.UAVTexelBuffer;
++      if (!texel.buffer)
++        break;
++      // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
++      // décaler la vue que de 255 éléments au plus.
++      if (texel.slice.firstElement > 0xff) {
++        static bool warned = false;
++        if (!warned) {
++          warned = true;
++          WARN("ambre-dx12: tampon type decale de plus de 255 elements, lecture fausse possible");
++        }
++      }
++      entry.gpu_va = texel.buffer->current()->gpuAddress();
++      entry.texture_view_id = texel.buffer->view_(texel.view).gpu_resource_id;
++      entry.metadata = IRBufferMetadata(texel.slice.byteLength, texel.slice.firstElement, true);
++      break;
++    }
+     }
+   }
+ 
+@@ -180,6 +261,7 @@ public:
+       gpu_storage.SRVTexture.resource_id = texture_view.gpuResourceID;
+       gpu_storage.SRVTexture.metadata = TextureMetadata(Texture->arrayLength(View), ResourceMinLODClamp);
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+     virtual HRESULT
+@@ -195,6 +277,7 @@ public:
+       gpu_storage.ConstantBuffer.address = VA;
+       gpu_storage.ConstantBuffer.size = SizeInBytes;
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -212,6 +295,7 @@ public:
+       gpu_storage.UAVTexture.resource_id = texture_view.gpuResourceID;
+       gpu_storage.UAVTexture.metadata = TextureMetadata(Texture->arrayLength(View), 0);
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -235,6 +319,7 @@ public:
+         gpu_storage.UAVTexelBuffer.metadata = 0;
+       }
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -258,6 +343,7 @@ public:
+         gpu_storage.UAVBuffer.counter_pointer = 0;
+       }
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -280,6 +366,7 @@ public:
+         gpu_storage.UAVTexelBuffer.metadata = 0;
+       }
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -300,6 +387,7 @@ public:
+         gpu_storage.SRVBuffer.metadata = 0;
+       }
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -318,6 +406,7 @@ public:
+       auto &gpu_storage = mapped_argument_buffer_[Index];
+       gpu_storage.ZeroFilled = {{}};
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -336,6 +425,7 @@ public:
+       auto &gpu_storage = mapped_argument_buffer_[Index];
+       gpu_storage.ZeroFilled = {{}};
+     }
++    UpdateIR(Index);
+     return S_OK;
+   }
+ 
+@@ -350,6 +440,7 @@ public:
+       static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->descriptors_[DescriptorTo + i] = descriptors_[From + i];
+       static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->mapped_argument_buffer_[DescriptorTo + i] =
+           mapped_argument_buffer_[From + i];
++      static_cast<MTLD3D12DescriptorHeapImpl *>(pHeapTo)->mapped_ir_[DescriptorTo + i] = mapped_ir_[From + i];
+     }
+   }
+ };
+@@ -463,6 +554,8 @@ class MTLD3D12SamplerDescriptorHeapImpl : public MTLD3D12Pageable<MTLD3D12Sample
+   Rc<Buffer> buffer_;
+   SamplerGPUStorage *mapped_argument_buffer_ = nullptr;
+   uint64_t argument_buffer_gpu_address_ = 0;
++  Rc<Buffer> ir_buffer_;
++  IRDescriptorEntry *mapped_ir_ = nullptr;
+ 
+ public:
+   MTLD3D12SamplerDescriptorHeapImpl(MTLD3D12Device *pDevice) :
+@@ -494,9 +587,19 @@ public:
+       argument_buffer_gpu_address_ = buffer_->current()->gpuAddress();
+       // FIXME: is residency required for descriptor heap? Should be the case for Metal 4
+       device_->RegisterResidencyAndVA(buffer_->current());
++
++      ir_buffer_ = new Buffer(samplers_.size() * sizeof(IRDescriptorEntry), device_->GetMTLDevice());
++      ir_buffer_->rename(ir_buffer_->allocate(flags));
++      mapped_ir_ = reinterpret_cast<IRDescriptorEntry *>(ir_buffer_->current()->mappedMemory(0));
++      memset(mapped_ir_, 0, samplers_.size() * sizeof(IRDescriptorEntry));
++      device_->RegisterResidencyAndVA(ir_buffer_->current());
++      GPUBaseAddress = argument_buffer_gpu_address_;
++      IRBaseAddress = ir_buffer_->current()->gpuAddress();
++      IRBuffer = ir_buffer_->current()->buffer();
+     } else {
+       mapped_argument_buffer_ =
+           reinterpret_cast<SamplerGPUStorage *>(malloc(samplers_.size() * sizeof(SamplerGPUStorage)));
++      mapped_ir_ = reinterpret_cast<IRDescriptorEntry *>(calloc(samplers_.size(), sizeof(IRDescriptorEntry)));
+     }
+ 
+     return S_OK;
+@@ -505,8 +608,10 @@ public:
+   ~MTLD3D12SamplerDescriptorHeapImpl() {
+      if (buffer_) {
+       device_->UnregisterResidencyAndVA(buffer_->current());
++      device_->UnregisterResidencyAndVA(ir_buffer_->current());
+     } else {
+       free(mapped_argument_buffer_);
++      free(mapped_ir_);
+     }
+   }
+ 
+@@ -568,6 +673,8 @@ public:
+       gpu_storage.cube_sampler = sampler->sampler_state_cube_handle;
+       gpu_storage.metadata = (uint64_t)std::bit_cast<uint32_t>(sampler->lod_bias);
+     }
++    // Ambre : format du Metal Shader Converter (échantillonneur dans gpuVA, biais de LOD).
++    mapped_ir_[Index] = {sampler->sampler_state_handle, 0, (uint64_t)std::bit_cast<uint32_t>(sampler->lod_bias)};
+ 
+     return S_OK;
+   }
+@@ -578,6 +685,7 @@ public:
+       static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(pHeapTo)->samplers_[DescriptorTo + i] = samplers_[From + i];
+       static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(pHeapTo)->mapped_argument_buffer_[DescriptorTo + i] =
+           mapped_argument_buffer_[From + i];
++      static_cast<MTLD3D12SamplerDescriptorHeapImpl *>(pHeapTo)->mapped_ir_[DescriptorTo + i] = mapped_ir_[From + i];
+     }
+   }
+ };
+diff --git a/src/d3d12/d3d12_descriptor_heap.hpp b/src/d3d12/d3d12_descriptor_heap.hpp
+index 3d8a1f2..8aff3f7 100644
+--- a/src/d3d12/d3d12_descriptor_heap.hpp
++++ b/src/d3d12/d3d12_descriptor_heap.hpp
+@@ -130,6 +130,13 @@ struct ShaderVisibleDescriptorCPUStorage {
+ 
+ class MTLD3D12DescriptorHeap : public ID3D12DescriptorHeap {
+ public:
++  /* Ambre : copie du tas au format du Metal Shader Converter (IRDescriptorTableEntry, 24 octets
++     par descripteur : adresse GPU, identifiant de vue, métadonnées), à côté du format de DXMT
++     (32 octets). GPUBaseAddress = adresse du tas DXMT, IRBaseAddress = adresse de la copie. */
++  uint64_t GPUBaseAddress = 0;
++  uint64_t IRBaseAddress = 0;
++  WMT::Buffer IRBuffer;
++
+   virtual HRESULT
+   AddShaderResourceView(UINT Index, Texture *Texture, TextureViewKey View, FLOAT ResourceMinLODClamp) = 0;
+ 
+@@ -158,6 +165,10 @@ public:
+ 
+ class MTLD3D12SamplerDescriptorHeap : public ID3D12DescriptorHeap {
+ public:
++  uint64_t GPUBaseAddress = 0; // Ambre : voir MTLD3D12DescriptorHeap
++  uint64_t IRBaseAddress = 0;
++  WMT::Buffer IRBuffer;
++
+   virtual HRESULT AddSampler(UINT Index, const D3D12_SAMPLER_DESC *Desc) = 0;
+ 
+   virtual void CopyDescriptors(UINT From, MTLD3D12SamplerDescriptorHeap *pHeapTo, UINT DescriptorTo, UINT CopyCount) = 0;
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 569ac45..d6b48ef 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -105,6 +105,10 @@ public:
+   uint32_t UploadQwords;
+   uint32_t ParameterSlots;
+   uint32_t const *SlotQwordOffsets;
++  /* Ambre : nature de chaque paramètre (0 constantes ou descripteur racine, 1 table de
++     CBV/SRV/UAV, 2 table d'échantillonneurs), pour traduire les adresses de tables vers le
++     format du Metal Shader Converter. La disposition des mots de 64 bits est la même. */
++  uint8_t const *SlotTableKinds;
+ 
+   size_t NumStaticSamplers;
+   uint64_t const *EncodedStaticSamplers;
+diff --git a/src/d3d12/d3d12_root_signature.cpp b/src/d3d12/d3d12_root_signature.cpp
+index abc2948..7ad86df 100644
+--- a/src/d3d12/d3d12_root_signature.cpp
++++ b/src/d3d12/d3d12_root_signature.cpp
+@@ -371,6 +371,7 @@ class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignatu
+   std::vector<uint8_t> blob_;
+   std::vector<uint32_t> qword_offsets_;
+   RootSignatureDeserializer deserializer_; // Ambre : gardé pour le Metal Shader Converter
++  std::vector<uint8_t> table_kinds_;
+ 
+   std::vector<Rc<Sampler>> static_samplers_; // which is not really "static"
+   /**
+@@ -458,6 +459,17 @@ public:
+     ParameterSlots = qword_offsets_.size();
+     SlotQwordOffsets = qword_offsets_.data();
+ 
++    table_kinds_.assign(desc.NumParameters, 0);
++    for (unsigned i = 0; i < desc.NumParameters; i++) {
++      auto &parameter = desc.pParameters[i];
++      if (parameter.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
++        continue;
++      bool sampler = parameter.DescriptorTable.NumDescriptorRanges &&
++                     parameter.DescriptorTable.pDescriptorRanges[0].RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
++      table_kinds_[i] = sampler ? 2 : 1;
++    }
++    SlotTableKinds = table_kinds_.data();
++
+     return S_OK;
+   }
+ 
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 5d04377..55afc55 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -980,6 +980,14 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
+       [encoder setVertexBuffer:(id<MTLBuffer>)body->buffer offset:body->offset atIndex:body->index];
+       break;
+     }
++    case WMTRenderCommandSetVertexBufferWithStride: {
++      struct wmtcmd_render_setbufferwithstride *body = (struct wmtcmd_render_setbufferwithstride *)next;
++      [encoder setVertexBuffer:(id<MTLBuffer>)body->buffer
++                        offset:body->offset
++               attributeStride:body->stride
++                       atIndex:body->index];
++      break;
++    }
+     case WMTRenderCommandSetVertexBufferOffset: {
+       struct wmtcmd_render_setbufferoffset *body = (struct wmtcmd_render_setbufferoffset *)next;
+       [encoder setVertexBufferOffset:body->offset atIndex:body->index];
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index bec4066..d96b6f4 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1232,6 +1232,8 @@ enum WMTRenderCommandType : uint16_t {
+   WMTRenderCommandSetBlendFactor,
+   WMTRenderCommandSetStencilRef,
+   WMTRenderCommandSetDepthStencilState,
++  /* Ambre : setVertexBuffer:offset:attributeStride:atIndex: (pipelines DXIL convertis) */
++  WMTRenderCommandSetVertexBufferWithStride,
+ };
+ 
+ struct wmtcmd_render_nop {
+@@ -1267,6 +1269,16 @@ struct wmtcmd_render_setbuffer {
+   uint8_t index;
+ };
+ 
++struct wmtcmd_render_setbufferwithstride {
++  enum WMTRenderCommandType type;
++  uint16_t reserved[3];
++  struct WMTMemoryPointer next;
++  obj_handle_t buffer;
++  uint64_t offset;
++  uint64_t stride;
++  uint8_t index;
++};
++
+ struct wmtcmd_render_setbytes {
+   enum WMTRenderCommandType type;
+   uint16_t reserved[3];

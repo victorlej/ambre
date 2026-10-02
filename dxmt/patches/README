@@ -13,7 +13,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0008 DirectX 12, étape 1 (docs/directx12.md) : shaders DXIL convertis par le Metal Shader Converter
      d'Apple (libmetalirconverter.dylib chargée à la demande par winemetal ; en-têtes Apache 2.0
      dans src/winemetal/unix/metal_irconverter), pipelines de calcul et de rendu (descripteur de
-     sommets Metal à pas dynamique) ; dessins avec ces pipelines encore sautés (liaison : étape 2)
+     sommets Metal à pas dynamique)
+0009 DirectX 12, étape 2 : tas miroirs au format du convertisseur (24 octets), adresses de tables
+     traduites, arguments racine (index 2), tas (0 et 1), tampons de sommets à pas dynamique
+     (6 + emplacement), paramètres de dessin (4 et 5) ; ExecuteIndirect encore sauté
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
