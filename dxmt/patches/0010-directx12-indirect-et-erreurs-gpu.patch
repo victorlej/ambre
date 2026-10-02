@@ -1,16 +1,18 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
-index 404eb40..ec2db18 100644
+index 404eb40..2d8d50c 100644
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -17,6 +17,7 @@
+@@ -17,6 +17,9 @@
   */
  
  #include "d3d12_command_allocator.hpp"
 +#include <atomic>
++#include <string>
++#include "util_env.hpp"
  #include "com/com_pointer.hpp"
  #include "dxmt_format.hpp"
  
-@@ -373,6 +374,8 @@ public:
+@@ -373,6 +376,8 @@ public:
  
      if (!pso_graphics_)
        return DrawCallStatus::Invalid;
@@ -19,7 +21,7 @@ index 404eb40..ec2db18 100644
  
      if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
        auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
-@@ -601,16 +604,8 @@ public:
+@@ -601,16 +606,8 @@ public:
        if (!kind)
          continue;
        auto &value = out[pRootSig->SlotQwordOffsets[i]];
@@ -38,7 +40,7 @@ index 404eb40..ec2db18 100644
      }
      return Offset;
    }
-@@ -685,6 +680,8 @@ public:
+@@ -685,6 +682,8 @@ public:
  
      if (!pso_compute_)
          return false;
@@ -47,7 +49,7 @@ index 404eb40..ec2db18 100644
  
      if (dirty_state_.test(DirtyState::ComputePipelineState)) {
        auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
-@@ -1600,6 +1597,75 @@ public:
+@@ -1600,6 +1599,110 @@ public:
  
    void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
  
@@ -68,12 +70,47 @@ index 404eb40..ec2db18 100644
 +        );
 +      return;
 +    }
++    // Diagnostic : fichier Allia/Logs/dx12-sans-indirect → commandes indirectes sautées.
++    static const bool skip_indirect = [] {
++      auto home = env::getEnvVar("HOME");
++      if (home.empty())
++        return false;
++      std::string path = "Z:" + home + "/Library/Application Support/Allia/Logs/dx12-sans-indirect";
++      for (auto &c : path)
++        if (c == '/')
++          c = '\\';
++      bool exists = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
++      if (exists)
++        WARN("ambre-dx12: commandes indirectes sautees (diagnostic)");
++      return exists;
++    }();
++    if (skip_indirect)
++      return;
 +    uint64_t offset = 0;
 +    auto allocation = device_->LookupBufferByVA(ArgBufferAddress, &offset);
 +    if (!allocation)
 +      return;
 +    auto buffer = allocation->buffer().handle;
 +    auto count = std::min(MaxCommandCount, 4096u);
++    // Diagnostic : tailles aberrantes (valeurs de l'image précédente, lues sans attendre la carte
++    // graphique) écrites dans le journal.
++    if (auto base = reinterpret_cast<const char *>(allocation->mappedMemory(0))) {
++      auto mapped = reinterpret_cast<const uint32_t *>(base + offset);
++      static std::atomic<uint32_t> reported = 0;
++      for (unsigned i = 0; i < count && reported < 40; i++) {
++        auto args = reinterpret_cast<const uint32_t *>(reinterpret_cast<const char *>(mapped) + i * sig->ByteStride);
++        uint64_t size = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH
++                            ? (uint64_t)args[0] * args[1] * args[2]
++                            : (uint64_t)args[0] * args[1];
++        if (size > 16u * 1024 * 1024) {
++          reported++;
++          WARN(
++              "ambre-dx12: commande indirecte enorme (type ", sig->CommandType, ") : ", args[0], " x ", args[1],
++              " x ", args[2], " (", count, " commandes)"
++          );
++        }
++      }
++    }
 +    if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
 +      if (!PreDispatch())
 +        return;
@@ -123,7 +160,7 @@ index 404eb40..ec2db18 100644
    void STDMETHODCALLTYPE ExecuteIndirect(
        ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
        UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
-@@ -1619,11 +1685,7 @@ public:
+@@ -1619,11 +1722,7 @@ public:
           pso_compute_->IsConvertedPipelineState) ||
          (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
           pso_graphics_->IsConvertedPipelineState)) {
