@@ -420,7 +420,7 @@ index 057e767..ea300f2 100644
    constexpr BufferAllocation *
    current() {
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index 8a8fb49..24f826d 100644
+index d4d1c87..70d519f 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
 @@ -1,5 +1,6 @@

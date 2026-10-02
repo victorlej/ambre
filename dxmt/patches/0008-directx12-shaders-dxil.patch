@@ -1,0 +1,714 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 6e82349..cadd6bb 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -365,6 +365,10 @@ public:
+ 
+     if (!pso_graphics_)
+       return DrawCallStatus::Invalid;
++    // Ambre, étape 1 du DirectX 12 : les pipelines convertis (DXIL) existent mais leurs
++    // ressources ne sont pas encore liées comme l'attend le Metal Shader Converter → dessin sauté.
++    if (pso_graphics_->IsConvertedPipelineState)
++      return DrawCallStatus::Invalid;
+ 
+     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+@@ -568,6 +572,8 @@ public:
+ 
+     if (!pso_compute_)
+         return false;
++    if (pso_compute_->IsConvertedPipelineState)
++      return false; // Ambre, étape 1 : voir PreDraw
+ 
+     if (dirty_state_.test(DirtyState::ComputePipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index bbe91ed..569ac45 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -96,6 +96,8 @@ public:
+ class MTLD3D12RootSignature : public ID3D12RootSignature {
+ public:
+   virtual UINT GetBlob(const void **ppBlob) = 0;
++  /* Ambre : root signature désérialisée (version 1.1), pour le Metal Shader Converter. */
++  virtual const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *GetVersionedDesc() = 0;
+ 
+   virtual void AddRefPrivate() = 0;
+   virtual void ReleasePrivate() = 0;
+@@ -129,9 +131,21 @@ public:
+ class MTLD3D12PipelineState : public ID3D12PipelineState {
+ public:
+   UINT IsComputePipelineState;
++  /* Ambre : pipeline aux shaders DXIL convertis par le Metal Shader Converter (modèle de
++     liaison du convertisseur, différent de celui d'airconv). */
++  UINT IsConvertedPipelineState = 0;
+ 
+   static HRESULT
+   InitializeShader(D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl);
++
++  /* Ambre : shaders DXIL (Shader Model 6) par le Metal Shader Converter d'Apple. */
++  static bool IsDXIL(D3D12_SHADER_BYTECODE Bytecode);
++
++  static HRESULT ConvertDXIL(
++      class MTLD3D12Device *pDevice, D3D12_SHADER_BYTECODE Bytecode, ID3D12RootSignature *pRootSignature,
++      uint32_t IntRTMask, bool DualSourceBlending, WMT::Reference<WMT::Function> &Function,
++      WMTIRReflection &Reflection
++  );
+ };
+ 
+ class MTLD3D12GraphicsPipelineState : public MTLD3D12PipelineState {
+diff --git a/src/d3d12/d3d12_pipeline_compute.cpp b/src/d3d12/d3d12_pipeline_compute.cpp
+index aae4946..40c7cf0 100644
+--- a/src/d3d12/d3d12_pipeline_compute.cpp
++++ b/src/d3d12/d3d12_pipeline_compute.cpp
+@@ -36,6 +36,29 @@ public:
+ 
+   HRESULT
+   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
++    // Ambre : shader DXIL (Shader Model 6) converti par le Metal Shader Converter.
++    if (IsDXIL(pDesc->CS)) {
++      WMTIRReflection reflection{};
++      WMT::Reference<WMT::Function> cs_func;
++      if (HRESULT hr = ConvertDXIL(device_, pDesc->CS, pDesc->pRootSignature, 0, false, cs_func, reflection);
++          FAILED(hr))
++        return hr;
++      threadgroup_size = {reflection.threadgroup_size[0], reflection.threadgroup_size[1],
++                          reflection.threadgroup_size[2]};
++      WMT::Reference<WMT::Error> err;
++      WMTComputePipelineInfo info;
++      WMT::InitializeComputePipelineInfo(info);
++      info.compute_function = cs_func;
++      info.support_indirect_command_buffers = true;
++      pso = device_->GetMTLDevice().newComputePipelineState(info, err);
++      if (!pso) {
++        ERR("ambre-dx12: pipeline de calcul refuse par Metal : ", err.description().getUTF8String());
++        return E_FAIL;
++      }
++      IsConvertedPipelineState = 1;
++      return S_OK;
++    }
++
+ 
+     SM50Shader shader_cs;
+     SM50Error sm50_err;
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 09f3c17..7059f61 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -25,6 +25,9 @@
+ #include "sha1/sha1_util.hpp"
+ #include "util_env.hpp"
+ #include <cstdio>
++#include <atomic>
++#include <string>
++#include <strings.h>
+ #include "DXBCParser/BlobContainer.h"
+ #include "DXBCParser/DXBCUtils.h"
+ 
+@@ -233,6 +236,67 @@ ExtractMTLInputLayoutElements(
+   return S_OK;
+ }
+ 
++// Ambre : enregistre le shader DXIL pour l'étudier (mode de diagnostic, AMBRE_DXIL_DUMP = dossier).
++static void
++AmbreDumpDXIL(D3D12_SHADER_BYTECODE Bytecode) {
++  static const std::string folder = env::getEnvVar("AMBRE_DXIL_DUMP");
++  if (folder.empty())
++    return;
++  auto name = folder + "\\" + Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string() + ".dxil";
++  if (FILE *existing = fopen(name.c_str(), "rb")) {
++    fclose(existing);
++  } else if (FILE *file = fopen(name.c_str(), "wb")) {
++    fwrite(Bytecode.pShaderBytecode, 1, Bytecode.BytecodeLength, file);
++    fclose(file);
++    WARN("ambre-dxil: shader enregistre ", name, " (", Bytecode.BytecodeLength, " octets)");
++  }
++}
++
++bool
++MTLD3D12PipelineState::IsDXIL(D3D12_SHADER_BYTECODE Bytecode) {
++  using namespace microsoft;
++  if (!Bytecode.pShaderBytecode || !Bytecode.BytecodeLength)
++    return false;
++  CDXBCParser Parser;
++  if (FAILED(Parser.ReadDXBC(Bytecode.pShaderBytecode, Bytecode.BytecodeLength)))
++    return false;
++  return Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND;
++}
++
++HRESULT
++MTLD3D12PipelineState::ConvertDXIL(
++    MTLD3D12Device *pDevice, D3D12_SHADER_BYTECODE Bytecode, ID3D12RootSignature *pRootSignature, uint32_t IntRTMask,
++    bool DualSourceBlending, WMT::Reference<WMT::Function> &Function, WMTIRReflection &Reflection
++) {
++  AmbreDumpDXIL(Bytecode);
++  WMTIRCompileInfo info{};
++  info.dxil.set(Bytecode.pShaderBytecode);
++  info.dxil_size = Bytecode.BytecodeLength;
++  info.root_signature.set(
++      pRootSignature ? static_cast<MTLD3D12RootSignature *>(pRootSignature)->GetVersionedDesc() : nullptr
++  );
++  info.int_rt_mask = IntRTMask;
++  info.dual_source_blending = DualSourceBlending;
++  char error[512];
++  auto library_handle =
++      IRConverter_newLibrary(pDevice->GetMTLDevice().handle, &info, &Reflection, error, sizeof(error));
++  if (!library_handle) {
++    ERR("ambre-dx12: shader DXIL non converti : ", error);
++    return E_FAIL;
++  }
++  WMT::Reference<WMT::Library> library(library_handle);
++  Function = library.newFunction(Reflection.entry_point);
++  if (!Function) {
++    ERR("ambre-dx12: fonction ", Reflection.entry_point, " absente du shader converti");
++    return E_FAIL;
++  }
++  static std::atomic<uint32_t> converted = 0;
++  auto count = ++converted;
++  if (count == 1 || count % 500 == 0)
++    WARN("ambre-dx12: ", count, " shaders DXIL convertis par le Metal Shader Converter");
++  return S_OK;
++}
++
+ HRESULT
+ MTLD3D12PipelineState::InitializeShader(
+     D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl
+@@ -244,18 +308,7 @@ MTLD3D12PipelineState::InitializeShader(
+     return hr;
+ 
+   if (Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND) {
+-    // Ambre : enregistre le shader DXIL pour l'étudier (mode de diagnostic).
+-    auto folder = env::getEnvVar("AMBRE_DXIL_DUMP");
+-    if (!folder.empty()) {
+-      auto name = folder + "\\" + Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string() + ".dxil";
+-      if (FILE *existing = fopen(name.c_str(), "rb")) {
+-        fclose(existing);
+-      } else if (FILE *file = fopen(name.c_str(), "wb")) {
+-        fwrite(Bytecode.pShaderBytecode, 1, Bytecode.BytecodeLength, file);
+-        fclose(file);
+-        WARN("ambre-dxil: shader enregistre ", name, " (", Bytecode.BytecodeLength, " octets)");
+-      }
+-    }
++    AmbreDumpDXIL(Bytecode);
+     return E_NOTIMPL;
+   }
+ 
+@@ -479,8 +532,145 @@ public:
+     forced_sample_count = pDesc->RasterizerState.ForcedSampleCount;
+   }
+ 
++  static bool
++  IsIntegerFormat(DXGI_FORMAT Format) {
++    switch (Format) {
++    case DXGI_FORMAT_R32G32B32A32_UINT: case DXGI_FORMAT_R32G32B32A32_SINT:
++    case DXGI_FORMAT_R32G32B32_UINT: case DXGI_FORMAT_R32G32B32_SINT:
++    case DXGI_FORMAT_R16G16B16A16_UINT: case DXGI_FORMAT_R16G16B16A16_SINT:
++    case DXGI_FORMAT_R32G32_UINT: case DXGI_FORMAT_R32G32_SINT:
++    case DXGI_FORMAT_R10G10B10A2_UINT:
++    case DXGI_FORMAT_R8G8B8A8_UINT: case DXGI_FORMAT_R8G8B8A8_SINT:
++    case DXGI_FORMAT_R16G16_UINT: case DXGI_FORMAT_R16G16_SINT:
++    case DXGI_FORMAT_R32_UINT: case DXGI_FORMAT_R32_SINT:
++    case DXGI_FORMAT_R8G8_UINT: case DXGI_FORMAT_R8G8_SINT:
++    case DXGI_FORMAT_R16_UINT: case DXGI_FORMAT_R16_SINT:
++    case DXGI_FORMAT_R8_UINT: case DXGI_FORMAT_R8_SINT:
++      return true;
++    default:
++      return false;
++    }
++  }
++
++  // Ambre : pipeline aux shaders DXIL convertis par le Metal Shader Converter. Sommets lus par
++  // Metal (descripteur de sommets, tampons à partir de l'index 6, attributs à partir de 11).
++  HRESULT
++  InitializeConverted(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
++    if (pDesc->StreamOutput.NumEntries || pDesc->GS.pShaderBytecode || pDesc->HS.pShaderBytecode ||
++        pDesc->DS.pShaderBytecode) {
++      ERR("ambre-dx12: pipeline DXIL avec GS, tessellation ou stream output : pas encore pris en charge");
++      return E_NOTIMPL;
++    }
++    if (pDesc->PS.pShaderBytecode && !IsDXIL(pDesc->PS)) {
++      ERR("ambre-dx12: shader de sommets DXIL avec shader de pixels DXBC");
++      return E_NOTIMPL;
++    }
++
++    HRESULT hr;
++    auto metal = device_->GetMTLDevice();
++    WMT::Reference<WMT::Error> err;
++
++    WMTRenderPipelineInfo info;
++    WMT::InitializeRenderPipelineInfo(info);
++    bool dual_source_blending = false;
++    if (FAILED(hr = InitializePSO(pDesc, info, dual_source_blending)))
++      return hr;
++
++    WMTIRReflection vs_reflection{}, ps_reflection{};
++    WMT::Reference<WMT::Function> vs_func, ps_func;
++    if (FAILED(hr = ConvertDXIL(device_, pDesc->VS, pDesc->pRootSignature, 0, false, vs_func, vs_reflection)))
++      return hr;
++
++    if (pDesc->PS.pShaderBytecode) {
++      uint32_t int_rt_mask = 0;
++      for (unsigned i = 0; i < pDesc->NumRenderTargets && i < 8; i++) {
++        if (IsIntegerFormat(pDesc->RTVFormats[i]))
++          int_rt_mask |= 1u << i;
++      }
++      if (FAILED(
++              hr = ConvertDXIL(
++                  device_, pDesc->PS, pDesc->pRootSignature, int_rt_mask, dual_source_blending, ps_func, ps_reflection
++              )
++          ))
++        return hr;
++    }
++
++    // Descripteur de sommets : chaque entrée du shader est rattachée à l'élément du input layout
++    // de même sémantique (« attribute0 » = ATTRIBUTE, index 0).
++    WMTVertexDescriptorInfo vertex{};
++    uint32_t append_offset[32] = {};
++    uint32_t used_slots = 0;
++    uint32_t slot_per_instance = 0, slot_step_rate[32] = {};
++    for (unsigned j = 0; j < pDesc->InputLayout.NumElements; j++) {
++      auto &element = pDesc->InputLayout.pInputElementDescs[j];
++      if (element.InputSlot >= 32)
++        continue;
++      MTL_DXGI_FORMAT_DESC format;
++      if (FAILED(MTLQueryDXGIFormat(metal, element.Format, format)) || !format.BytesPerTexel) {
++        ERR("ambre-dx12: format de sommet non pris en charge : ", element.Format);
++        return E_INVALIDARG;
++      }
++      uint32_t offset = element.AlignedByteOffset == D3D12_APPEND_ALIGNED_ELEMENT
++                            ? align(append_offset[element.InputSlot], std::min(4u, format.BytesPerTexel))
++                            : element.AlignedByteOffset;
++      append_offset[element.InputSlot] = offset + format.BytesPerTexel;
++
++      std::string semantic = element.SemanticName ? element.SemanticName : "";
++      semantic += std::to_string(element.SemanticIndex);
++      for (unsigned k = 0; k < vs_reflection.num_vertex_inputs; k++) {
++        auto &input = vs_reflection.vertex_inputs[k];
++        if (strcasecmp(input.name, semantic.c_str()) != 0)
++          continue;
++        auto &attribute = vertex.attributes[vertex.num_attributes++];
++        attribute.dxgi_format = element.Format;
++        attribute.offset = offset;
++        attribute.buffer_index = 6 + element.InputSlot;
++        attribute.attribute_index = 11 + input.attribute_index;
++        used_slots |= 1u << element.InputSlot;
++        if (element.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA) {
++          slot_per_instance |= 1u << element.InputSlot;
++          slot_step_rate[element.InputSlot] = element.InstanceDataStepRate;
++        }
++        break;
++      }
++    }
++    if (vertex.num_attributes != vs_reflection.num_vertex_inputs) {
++      WARN(
++          "ambre-dx12: ", vs_reflection.num_vertex_inputs - vertex.num_attributes,
++          " entree(s) du shader de sommets sans element dans le input layout"
++      );
++    }
++    for (unsigned slot = 0; slot < 32; slot++) {
++      if (!(used_slots & (1u << slot)))
++        continue;
++      auto &layout = vertex.layouts[vertex.num_layouts++];
++      layout.buffer_index = 6 + slot;
++      layout.per_instance = (slot_per_instance >> slot) & 1;
++      layout.step_rate = slot_step_rate[slot];
++    }
++    slot_mask = used_slots;
++    if (vertex.num_attributes)
++      info.vertex_descriptor.set(&vertex);
++
++    info.vertex_function = vs_func.handle;
++    info.fragment_function = ps_func.handle;
++    pso = metal.newRenderPipelineState(info, err);
++    if (!pso) {
++      ERR("ambre-dx12: pipeline de rendu refuse par Metal : ", err.description().getUTF8String());
++      return E_FAIL;
++    }
++
++    InitializeDSSO(pDesc);
++    InitializeRasterizerState(pDesc);
++    IsConvertedPipelineState = 1;
++    return S_OK;
++  }
++
+   virtual HRESULT
+   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
++    if (IsDXIL(pDesc->VS))
++      return InitializeConverted(pDesc);
++
+     if (pDesc->StreamOutput.NumEntries) {
+       ERR("CreatePipelineState: SO not supported");
+       return E_NOTIMPL;
+diff --git a/src/d3d12/d3d12_root_signature.cpp b/src/d3d12/d3d12_root_signature.cpp
+index 7a24aac..abc2948 100644
+--- a/src/d3d12/d3d12_root_signature.cpp
++++ b/src/d3d12/d3d12_root_signature.cpp
+@@ -370,6 +370,7 @@ class MTLD3D12RootSignatureImpl : public MTLD3D12DeviceChild<MTLD3D12RootSignatu
+ 
+   std::vector<uint8_t> blob_;
+   std::vector<uint32_t> qword_offsets_;
++  RootSignatureDeserializer deserializer_; // Ambre : gardé pour le Metal Shader Converter
+ 
+   std::vector<Rc<Sampler>> static_samplers_; // which is not really "static"
+   /**
+@@ -395,12 +396,11 @@ public:
+     if (FAILED(hr))
+       return hr;
+ 
+-    RootSignatureDeserializer deserializer;
+-    hr = deserializer.Deserialize(pRawRootSig, RawRootSigSize);
++    hr = deserializer_.Deserialize(pRawRootSig, RawRootSigSize);
+     if (FAILED(hr))
+       return hr;
+ 
+-    auto &desc = deserializer.desc_1_1_.Desc_1_1;
++    auto &desc = deserializer_.desc_1_1_.Desc_1_1;
+ 
+     if (desc.NumParameters) {
+       if (desc.NumParameters > D3D12_MAX_ROOT_COST)
+@@ -487,6 +487,11 @@ public:
+     *ppBlob = blob_.data();
+     return blob_.size();
+   }
++
++  const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *
++  GetVersionedDesc() {
++    return &deserializer_.desc_1_1_;
++  }
+ };
+ 
+ HRESULT
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 8224a0c..2eb6fef 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -1161,6 +1161,7 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
+   info.num_binary_archives_for_lookup = 0;
+   info.fail_on_binary_archive_miss = false;
+   info.support_indirect_command_buffers = false;
++  info.vertex_descriptor.set(nullptr);
+ }
+ 
+ inline void
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 5ef086d..910cfcf 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -518,6 +518,56 @@ MTLMeshRenderPipelineDescriptor ()
+ 
+ #endif
+ 
++/* Ambre : format DXGI (numéro) -> format de sommet Metal. */
++static MTLVertexFormat
++ambre_vertex_format(uint32_t dxgi) {
++  switch (dxgi) {
++  case 2: return MTLVertexFormatFloat4;
++  case 3: return MTLVertexFormatUInt4;
++  case 4: return MTLVertexFormatInt4;
++  case 6: return MTLVertexFormatFloat3;
++  case 7: return MTLVertexFormatUInt3;
++  case 8: return MTLVertexFormatInt3;
++  case 10: return MTLVertexFormatHalf4;
++  case 11: return MTLVertexFormatUShort4Normalized;
++  case 12: return MTLVertexFormatUShort4;
++  case 13: return MTLVertexFormatShort4Normalized;
++  case 14: return MTLVertexFormatShort4;
++  case 16: return MTLVertexFormatFloat2;
++  case 17: return MTLVertexFormatUInt2;
++  case 18: return MTLVertexFormatInt2;
++  case 24: return MTLVertexFormatUInt1010102Normalized;
++  case 26: return MTLVertexFormatFloatRG11B10;
++  case 28: return MTLVertexFormatUChar4Normalized;
++  case 30: return MTLVertexFormatUChar4;
++  case 31: return MTLVertexFormatChar4Normalized;
++  case 32: return MTLVertexFormatChar4;
++  case 34: return MTLVertexFormatHalf2;
++  case 35: return MTLVertexFormatUShort2Normalized;
++  case 36: return MTLVertexFormatUShort2;
++  case 37: return MTLVertexFormatShort2Normalized;
++  case 38: return MTLVertexFormatShort2;
++  case 41: return MTLVertexFormatFloat;
++  case 42: return MTLVertexFormatUInt;
++  case 43: return MTLVertexFormatInt;
++  case 49: return MTLVertexFormatUChar2Normalized;
++  case 50: return MTLVertexFormatUChar2;
++  case 51: return MTLVertexFormatChar2Normalized;
++  case 52: return MTLVertexFormatChar2;
++  case 54: return MTLVertexFormatHalf;
++  case 56: return MTLVertexFormatUShortNormalized;
++  case 57: return MTLVertexFormatUShort;
++  case 58: return MTLVertexFormatShortNormalized;
++  case 59: return MTLVertexFormatShort;
++  case 61: return MTLVertexFormatUCharNormalized;
++  case 62: return MTLVertexFormatUChar;
++  case 63: return MTLVertexFormatCharNormalized;
++  case 64: return MTLVertexFormatChar;
++  case 87: return MTLVertexFormatUChar4Normalized_BGRA;
++  default: return MTLVertexFormatInvalid;
++  }
++}
++
+ static NTSTATUS
+ _MTLDevice_newRenderPipelineState(void *obj) {
+   struct unixcall_mtldevice_newrenderpso *params = obj;
+@@ -564,6 +614,28 @@ _MTLDevice_newRenderPipelineState(void *obj) {
+   descriptor.fragmentFunction = (id<MTLFunction>)info->fragment_function;
+   descriptor.supportIndirectCommandBuffers = info->support_indirect_command_buffers;
+ 
++  /* Ambre : descripteur de sommets des pipelines convertis par le Metal Shader Converter
++     (pas dynamique : D3D12 donne le pas au moment de lier le tampon). */
++  if (info->vertex_descriptor.ptr) {
++    const struct WMTVertexDescriptorInfo *vd = info->vertex_descriptor.ptr;
++    MTLVertexDescriptor *vertex = [MTLVertexDescriptor vertexDescriptor];
++    for (unsigned i = 0; i < vd->num_attributes && i < 32; i++) {
++      const struct WMTVertexAttributeInfo *a = &vd->attributes[i];
++      vertex.attributes[a->attribute_index].format = ambre_vertex_format(a->dxgi_format);
++      vertex.attributes[a->attribute_index].offset = a->offset;
++      vertex.attributes[a->attribute_index].bufferIndex = a->buffer_index;
++    }
++    for (unsigned i = 0; i < vd->num_layouts && i < 32; i++) {
++      const struct WMTVertexLayoutInfo *l = &vd->layouts[i];
++      vertex.layouts[l->buffer_index].stride = MTLBufferLayoutStrideDynamic;
++      vertex.layouts[l->buffer_index].stepFunction =
++          l->per_instance ? (l->step_rate ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionConstant)
++                          : MTLVertexStepFunctionPerVertex;
++      vertex.layouts[l->buffer_index].stepRate = l->per_instance ? (l->step_rate ? l->step_rate : 0) : 1;
++    }
++    descriptor.vertexDescriptor = vertex;
++  }
++
+   if (info->num_binary_archives_for_lookup && info->binary_archives_for_lookup.ptr)
+     descriptor.binaryArchives = [NSArray arrayWithObjects:(id<MTLBinaryArchive> *)info->binary_archives_for_lookup.ptr
+                                                     count:info->num_binary_archives_for_lookup];
+@@ -3189,6 +3261,95 @@ NTSTATUS _CacheWriter_alloc_init(void *obj);
+ NTSTATUS _CacheWriter_set(void *obj);
+ NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
+ 
++/* Ambre : prise générique de conversion des shaders DXIL (DirectX 12, Shader Model 6).
++   Module chargé à la demande : AMBRE_DXIL_PLUGIN, sinon libambre_dxil.dylib à côté de
++   winemetal.so. Interface (les structures sont celles de winemetal.h) :
++     int  ambre_dxil_convert(const struct WMTIRCompileInfo *, struct WMTIRReflection *,
++                             void **metallib, size_t *size, char *error, size_t error_size);
++     void ambre_dxil_free(void *metallib);
++   winemetal crée ensuite la bibliothèque Metal à partir du metallib rendu. */
++#include <pthread.h>
++#include <libgen.h>
++
++typedef int (*ambre_dxil_convert_fn)(
++    const struct WMTIRCompileInfo *, struct WMTIRReflection *, void **, size_t *, char *, size_t
++);
++typedef void (*ambre_dxil_free_fn)(void *);
++static ambre_dxil_convert_fn ambre_dxil_convert;
++static ambre_dxil_free_fn ambre_dxil_free;
++static pthread_once_t ambre_dxil_once = PTHREAD_ONCE_INIT;
++
++static void
++ambre_dxil_load(void) {
++  char path[PATH_MAX];
++  const char *env = getenv("AMBRE_DXIL_PLUGIN");
++  if (env && *env) {
++    snprintf(path, sizeof(path), "%s", env);
++  } else {
++    Dl_info info;
++    char self[PATH_MAX];
++    if (!dladdr((void *)&ambre_dxil_load, &info) || !info.dli_fname)
++      return;
++    snprintf(self, sizeof(self), "%s", info.dli_fname);
++    snprintf(path, sizeof(path), "%s/libambre_dxil.dylib", dirname(self));
++  }
++  void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++  if (!lib) {
++    fprintf(stderr, "ambre-dx12: module de conversion DXIL introuvable (%s)\n", path);
++    return;
++  }
++  ambre_dxil_convert = (ambre_dxil_convert_fn)dlsym(lib, "ambre_dxil_convert");
++  ambre_dxil_free = (ambre_dxil_free_fn)dlsym(lib, "ambre_dxil_free");
++  if (!ambre_dxil_convert || !ambre_dxil_free) {
++    ambre_dxil_convert = NULL;
++    fprintf(stderr, "ambre-dx12: module de conversion DXIL incomplet (%s)\n", path);
++  }
++}
++
++static NTSTATUS
++_IRConverter_newLibrary(void *obj) {
++  struct unixcall_irconverter_newlibrary *params = obj;
++  const struct WMTIRCompileInfo *info = params->info.ptr;
++  struct WMTIRReflection *reflection = params->reflection.ptr;
++  char *error = params->error.ptr;
++  size_t error_size = params->error_size;
++  char fallback[256];
++  if (!error || !error_size) {
++    error = fallback;
++    error_size = sizeof(fallback);
++  }
++  params->ret_library = 0;
++
++  pthread_once(&ambre_dxil_once, ambre_dxil_load);
++  if (!ambre_dxil_convert) {
++    snprintf(error, error_size, "pas de module de conversion DXIL");
++    return STATUS_SUCCESS;
++  }
++  struct WMTIRReflection local_reflection;
++  void *bytes = NULL;
++  size_t size = 0;
++  if (ambre_dxil_convert(info, reflection ? reflection : &local_reflection, &bytes, &size, error, error_size))
++    return STATUS_SUCCESS;
++
++  dispatch_data_t data = dispatch_data_create(bytes, size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
++  NSError *ns_error = NULL;
++  id<MTLLibrary> library = [(id<MTLDevice>)params->device newLibraryWithData:data error:&ns_error];
++  dispatch_release(data);
++  ambre_dxil_free(bytes);
++  if (!library) {
++    snprintf(error, error_size, "bibliotheque Metal refusee : %s",
++             ns_error ? [[ns_error localizedDescription] UTF8String] : "?");
++    return STATUS_SUCCESS;
++  }
++  params->ret_library = (obj_handle_t)library;
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_IRConverter_unsupported(void *obj) {
++  return (NTSTATUS)0xC0000002; /* STATUS_NOT_IMPLEMENTED */
++}
++
+ const void *__wine_unix_call_funcs[] = {
+     &_NSObject_retain,
+     &_NSObject_release,
+@@ -3336,6 +3497,7 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLDevice_newIndirectCommandBuffer,
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
++    &_IRConverter_newLibrary,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -3486,5 +3648,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_MTLDevice_newIndirectCommandBuffer,
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
++    &_IRConverter_unsupported,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index 97fffc7..3a0a83b 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -829,6 +829,9 @@ struct WMTRenderPipelineInfo {
+   bool fail_on_binary_archive_miss;
+   bool support_indirect_command_buffers;
+   uint8_t padding[5];
++  /* Ambre : descripteur de sommets Metal (struct WMTVertexDescriptorInfo), ou NULL. Seulement
++     pour les pipelines DirectX 12 convertis par le Metal Shader Converter d'Apple. */
++  struct WMTConstMemoryPointer vertex_descriptor;
+ };
+ 
+ struct WMTMeshRenderPipelineInfo {
+@@ -2143,6 +2146,59 @@ WINEMETAL_API obj_handle_t MTLDevice_newIndirectCommandBuffer(
+ WINEMETAL_API obj_handle_t
+ MTLDevice_newLibraryWithSource(obj_handle_t device, const char *source, uint64_t length, obj_handle_t *err_out);
+ 
++/* Ambre : shaders DXIL (DirectX 12, Shader Model 6) convertis en Metal par un module de
++   conversion chargé à la demande côté macOS (prise AMBRE_DXIL_PLUGIN, voir winemetal_unix.c). */
++struct WMTVertexAttributeInfo {
++  uint32_t dxgi_format;
++  uint32_t offset;
++  uint32_t buffer_index;
++  uint32_t attribute_index;
++};
++
++struct WMTVertexLayoutInfo {
++  uint32_t buffer_index;
++  uint32_t per_instance;
++  uint32_t step_rate;
++  uint32_t padding;
++};
++
++struct WMTVertexDescriptorInfo {
++  uint32_t num_attributes;
++  uint32_t num_layouts;
++  struct WMTVertexAttributeInfo attributes[32];
++  struct WMTVertexLayoutInfo layouts[32];
++};
++
++struct WMTIRCompileInfo {
++  struct WMTConstMemoryPointer dxil;
++  uint64_t dxil_size;
++  /* D3D12_VERSIONED_ROOT_SIGNATURE_DESC (même disposition en mémoire que
++     IRVersionedRootSignatureDescriptor), ou NULL : root signature intégrée au shader. */
++  struct WMTConstMemoryPointer root_signature;
++  uint32_t int_rt_mask;
++  uint32_t dual_source_blending;
++};
++
++struct WMTIRVertexInput {
++  char name[64];
++  uint32_t attribute_index;
++  uint32_t padding;
++};
++
++struct WMTIRReflection {
++  uint32_t stage; /* IRShaderStage : 1 sommets, 2 pixels, 8 calcul */
++  uint32_t threadgroup_size[3];
++  uint32_t needs_draw_params;
++  uint32_t num_vertex_inputs;
++  struct WMTIRVertexInput vertex_inputs[32];
++  char entry_point[128];
++};
++
++WINEMETAL_API obj_handle_t IRConverter_newLibrary(
++    obj_handle_t device, const struct WMTIRCompileInfo *info, struct WMTIRReflection *reflection, char *error,
++    uint64_t error_size
++);
++
+ WINEMETAL_API void MTLTexture_getBytes(
+     obj_handle_t texture, struct WMTOrigin origin, struct WMTSize size, uint64_t level, uint64_t slice,
+     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 42286c9..0679ac4 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1331,3 +1331,22 @@ MTLTexture_getBytes(
+   params.bytes_per_image = bytes_per_image;
+   UNIX_CALL(145, &params);
+ }
++
++WINEMETAL_API obj_handle_t
++IRConverter_newLibrary(
++    obj_handle_t device, const struct WMTIRCompileInfo *info, struct WMTIRReflection *reflection, char *error,
++    uint64_t error_size
++) {
++  struct unixcall_irconverter_newlibrary params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  WMT_MEMPTR_SET(params.reflection, reflection);
++  WMT_MEMPTR_SET(params.error, error);
++  params.error_size = error_size;
++  params.ret_library = 0;
++  if (error && error_size)
++    error[0] = 0;
++  if (UNIX_CALL(146, &params))
++    return 0;
++  return params.ret_library;
++}
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index 37645c9..c1cd261 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -435,6 +435,15 @@ struct unixcall_mtldevice_newicb {
+   obj_handle_t ret;
+ };
+ 
++struct unixcall_irconverter_newlibrary {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  struct WMTMemoryPointer reflection;
++  struct WMTMemoryPointer error;
++  uint64_t error_size;
++  obj_handle_t ret_library;
++};
++
+ #pragma pack(pop)
+ 
+ #endif
