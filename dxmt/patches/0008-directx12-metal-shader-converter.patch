@@ -2619,7 +2619,7 @@ index 0000000..806cae2
 +}
 +#endif
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index 5ef086d..512a838 100644
+index 5ef086d..5d04377 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
 @@ -518,6 +518,56 @@ MTLMeshRenderPipelineDescriptor ()
@@ -2892,7 +2892,7 @@ index 5ef086d..512a838 100644
 +
 +static NTSTATUS
 +_IRConverter_unsupported(void *obj) {
-+  return STATUS_NOT_IMPLEMENTED;
++  return (NTSTATUS)0xC0000002; /* STATUS_NOT_IMPLEMENTED */
 +}
 +
  const void *__wine_unix_call_funcs[] = {
