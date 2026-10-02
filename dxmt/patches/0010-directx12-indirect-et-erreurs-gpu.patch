@@ -1,8 +1,16 @@
 diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
-index 404eb40..757f8f3 100644
+index 404eb40..2ca7829 100644
 --- a/src/d3d12/d3d12_command_list.cpp
 +++ b/src/d3d12/d3d12_command_list.cpp
-@@ -1600,6 +1600,75 @@ public:
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "d3d12_command_allocator.hpp"
++#include <atomic>
+ #include "com/com_pointer.hpp"
+ #include "dxmt_format.hpp"
+ 
+@@ -1600,6 +1601,75 @@ public:
  
    void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
  
@@ -78,7 +86,7 @@ index 404eb40..757f8f3 100644
    void STDMETHODCALLTYPE ExecuteIndirect(
        ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
        UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
-@@ -1619,11 +1688,7 @@ public:
+@@ -1619,11 +1689,7 @@ public:
           pso_compute_->IsConvertedPipelineState) ||
          (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
           pso_graphics_->IsConvertedPipelineState)) {
