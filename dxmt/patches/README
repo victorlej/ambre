@@ -20,7 +20,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      gardés en mémoire, conversions en parallèle ; geometry shader ignoré (pas encore émulé)
 0010 DirectX 12 : ExecuteIndirect simple (un argument) des pipelines DXIL par commandes indirectes
      Metal ; erreurs de la carte graphique et échecs de création de ressources dans le journal ;
-     CreateCommittedResource1 et CreateHeap1 sans session protégée
+     CreateCommittedResource1 et CreateHeap1 sans session protégée ; vues de tampons typés décalés
+     de plus de 255 éléments
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

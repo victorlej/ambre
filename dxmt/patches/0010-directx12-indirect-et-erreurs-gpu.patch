@@ -112,6 +112,36 @@ index 0a046e2..1150699 100644
  
      if (is_compute)
        source
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 754dfc1..cb16149 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -192,17 +192,16 @@ public:
+       if (!texel.buffer)
+         break;
+       // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
+-      // décaler la vue que de 255 éléments au plus.
++      // décaler la vue que de 255 éléments : au-delà, vue propre qui commence au bon endroit.
++      entry.gpu_va = texel.buffer->current()->gpuAddress();
+       if (texel.slice.firstElement > 0xff) {
+-        static bool warned = false;
+-        if (!warned) {
+-          warned = true;
+-          WARN("ambre-dx12: tampon type decale de plus de 255 elements, lecture fausse possible");
+-        }
++        uint32_t remaining = 0;
++        entry.texture_view_id = texel.buffer->offsetViewResourceID(texel.view, texel.slice.firstElement, &remaining);
++        entry.metadata = IRBufferMetadata(texel.slice.byteLength, remaining, true);
++      } else {
++        entry.texture_view_id = texel.buffer->view_(texel.view).gpu_resource_id;
++        entry.metadata = IRBufferMetadata(texel.slice.byteLength, texel.slice.firstElement, true);
+       }
+-      entry.gpu_va = texel.buffer->current()->gpuAddress();
+-      entry.texture_view_id = texel.buffer->view_(texel.view).gpu_resource_id;
+-      entry.metadata = IRBufferMetadata(texel.slice.byteLength, texel.slice.firstElement, true);
+       break;
+     }
+     }
 diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
 index d1dfb5b..15559b0 100644
 --- a/src/d3d12/d3d12_device.cpp
@@ -288,6 +318,94 @@ index d6b48ef..953edcb 100644
  
    WMT::Reference<WMT::RenderPipelineState> render_resolver;
    WMT::Reference<WMT::ComputePipelineState> compute_resolver;
+diff --git a/src/dxmt/dxmt_buffer.cpp b/src/dxmt/dxmt_buffer.cpp
+index 9a4139d..ecefe96 100644
+--- a/src/dxmt/dxmt_buffer.cpp
++++ b/src/dxmt/dxmt_buffer.cpp
+@@ -154,6 +154,52 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
+   allocation->version_ = version_;
+ };
+ 
++uint64_t
++Buffer::offsetViewResourceID(BufferViewKey key, uint32_t first_element, uint32_t *remaining_elements) {
++  view_(key); // vues du format prêtes
++  std::unique_lock<dxmt::mutex> lock(mutex_);
++  auto allocation = current_.ptr();
++  if (!allocation || key.index >= viewDescriptors_.size())
++    return 0;
++  auto format = viewDescriptors_[key.index].format;
++  uint64_t texel_size = MTLGetTexelSize(format);
++  if (!texel_size)
++    return 0;
++  // Début de vue sur un multiple de 256 éléments (donc de 256 octets, exigence de Metal) ; le
++  // reste (< 256 éléments) passe par le décalage du convertisseur.
++  uint64_t offset = (uint64_t)(first_element & ~255u) * texel_size;
++  *remaining_elements = first_element & 255u;
++  uint64_t cache_key = ((uint64_t)key.index << 32) | (first_element >> 8);
++  auto found = allocation->ambre_offset_views_.find(cache_key);
++  if (found != allocation->ambre_offset_views_.end())
++    return found->second->gpu_resource_id;
++  uint64_t total_length = allocation->suballocation_size_ * allocation->suballocation_count_;
++  if (offset >= total_length)
++    return 0;
++  WMTTextureInfo info;
++  info.type = WMTTextureTypeTextureBuffer;
++  info.width = (total_length - offset) / texel_size;
++  info.height = 1;
++  info.depth = 1;
++  info.array_length = 1;
++  info.mipmap_level_count = 1;
++  info.sample_count = 1;
++  info.pixel_format = format;
++  info.options = allocation->info_.options;
++  auto usage = WMTTextureUsageShaderRead;
++  if (!allocation->flags().test(BufferAllocationFlag::GpuReadonly) &&
++      (allocation->flags().test(BufferAllocationFlag::GpuManaged) ||
++       allocation->flags().test(BufferAllocationFlag::GpuPrivate)))
++    usage |= WMTTextureUsageShaderWrite;
++  info.usage = usage;
++  auto view = allocation->obj_.newTexture(info, offset, total_length - offset);
++  if (!view)
++    return 0;
++  auto id = info.gpu_resource_id;
++  allocation->ambre_offset_views_.emplace(cache_key, std::make_unique<BufferView>(std::move(view), id, 0));
++  return id;
++}
++
+ BufferViewKey
+ Buffer::createView(BufferViewDescriptor const &descriptor) {
+   std::unique_lock<dxmt::mutex> lock(mutex_);
+diff --git a/src/dxmt/dxmt_buffer.hpp b/src/dxmt/dxmt_buffer.hpp
+index 057e767..ea300f2 100644
+--- a/src/dxmt/dxmt_buffer.hpp
++++ b/src/dxmt/dxmt_buffer.hpp
+@@ -17,6 +17,7 @@
+  */
+ 
+ #pragma once
++#include <map>
+ 
+ #include "Metal.hpp"
+ #include "dxmt_deptrack.hpp"
+@@ -162,6 +163,8 @@ private:
+   uint32_t version_ = 0;
+   Flags<BufferAllocationFlag> flags_;
+   small_vector<std::unique_ptr<BufferView>, 1> cached_view_;
++  // Ambre : vues texture décalées (tampons typés du DirectX 12 converti, décalage > 255 éléments).
++  std::map<uint64_t, std::unique_ptr<BufferView>> ambre_offset_views_;
+   void *mappedMemory_;
+   uint64_t gpuAddress_;
+   uint32_t current_suballocation_ = 0;
+@@ -177,6 +180,9 @@ public:
+   void decRef();
+ 
+   BufferViewKey createView(BufferViewDescriptor const &);
++  /* Ambre : identifiant GPU d'une vue texture qui commence à l'élément first_element (le Metal
++     Shader Converter ne sait décaler une vue que de 255 éléments). 0 si impossible. */
++  uint64_t offsetViewResourceID(BufferViewKey key, uint32_t first_element, uint32_t *remaining_elements);
+ 
+   constexpr BufferAllocation *
+   current() {
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
 index 8a8fb49..2061c0d 100644
 --- a/src/winemetal/unix/winemetal_unix.c
