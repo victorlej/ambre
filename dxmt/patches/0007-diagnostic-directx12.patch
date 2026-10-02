@@ -1,0 +1,115 @@
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 080353c..454026f 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -18,6 +18,9 @@
+ 
+ #include "d3d12_device.hpp"
+ #include "d3d12_device_child.hpp"
++#include "util_env.hpp"
++#include <algorithm>
++#include <cstring>
+ #include "Metal.hpp"
+ #include "com/com_pointer.hpp"
+ #include "com/com_object.hpp"
+@@ -30,6 +33,15 @@
+ 
+ namespace dxmt {
+ 
++// Ambre : mode de diagnostic DirectX 12 (AMBRE_DXIL_DUMP = dossier).
++// Annonce le Shader Model 6 pour que le jeu reste en DirectX 12 et envoie
++// ses shaders DXIL, enregistrés dans ce dossier pour être étudiés.
++bool AmbreDxilDiagnostic() {
++  static const bool enabled = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return enabled;
++}
++
++
+ const GUID kD3D12DeviceDownlevelUUID = {0x74eaee3f, 0x2f4b, 0x476d, {0x82, 0xba, 0x2b, 0x85, 0xcb, 0x49, 0xe3, 0x10}};
+ 
+ HRESULT PopulateWMTTextureInfo(WMT::Device Device, WMTTextureInfo &InfoOut, const D3D12_RESOURCE_DESC &Desc);
+@@ -268,7 +280,12 @@ public:
+     case D3D12_FEATURE_SHADER_MODEL: {
+       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
+         return E_INVALIDARG;
+-      reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData)->HighestShaderModel = D3D_SHADER_MODEL_5_1;
++      auto *sm = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
++      if (AmbreDxilDiagnostic()) {
++        WARN("ambre-dxil: shader model demande ", (unsigned)sm->HighestShaderModel);
++        sm->HighestShaderModel = (D3D_SHADER_MODEL)std::min((unsigned)sm->HighestShaderModel, 0x66u);
++      } else
++        sm->HighestShaderModel = D3D_SHADER_MODEL_5_1;
+       return S_OK;
+     }
+     case D3D12_FEATURE_D3D12_OPTIONS: {
+@@ -279,7 +296,7 @@ public:
+       out->OutputMergerLogicOp = FALSE;
+       out->MinPrecisionSupport = D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT;
+       out->TiledResourcesTier = D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
+-      out->ResourceBindingTier = D3D12_RESOURCE_BINDING_TIER_2;
++      out->ResourceBindingTier = AmbreDxilDiagnostic() ? D3D12_RESOURCE_BINDING_TIER_3 : D3D12_RESOURCE_BINDING_TIER_2;
+       out->PSSpecifiedStencilRefSupported = TRUE;
+       out->TypedUAVLoadAdditionalFormats = TRUE;
+       out->ROVsSupported = TRUE;
+@@ -330,6 +347,13 @@ public:
+       // If CheckFeatureSupport succeeds this value will always be true.
+       out->ExpandedComputeResourceStates = TRUE;
+       out->Int64ShaderOps = FALSE;
++      if (AmbreDxilDiagnostic()) {
++        out->WaveOps = TRUE;
++        out->WaveLaneCountMin = 32;
++        out->WaveLaneCountMax = 32;
++        out->TotalLaneCount = 32 * 1024;
++        out->Int64ShaderOps = TRUE;
++      }
+       return S_OK;
+     }
+     case D3D12_FEATURE_D3D12_OPTIONS12: {
+@@ -386,6 +410,11 @@ public:
+     default:
+       break;
+     }
++    if (AmbreDxilDiagnostic() && pFeatureData && DataSize) {
++      WARN("ambre-dxil: feature ", Feature, " (", DataSize, " octets) repondue a zero");
++      std::memset(pFeatureData, 0, DataSize);
++      return S_OK;
++    }
+     ERR("CheckFeatureSupport: unhandled feature ", Feature);
+     return E_NOTIMPL;
+   };
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 22d5638..09f3c17 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -23,6 +23,8 @@
+ #include "com/com_object.hpp"
+ #include "com/com_pointer.hpp"
+ #include "sha1/sha1_util.hpp"
++#include "util_env.hpp"
++#include <cstdio>
+ #include "DXBCParser/BlobContainer.h"
+ #include "DXBCParser/DXBCUtils.h"
+ 
+@@ -241,8 +243,21 @@ MTLD3D12PipelineState::InitializeShader(
+   if (FAILED(hr = Parser.ReadDXBC(Bytecode.pShaderBytecode, Bytecode.BytecodeLength)))
+     return hr;
+ 
+-  if (Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND)
++  if (Parser.FindNextMatchingBlob(microsoft::DXBC_DXIL) != DXBC_BLOB_NOT_FOUND) {
++    // Ambre : enregistre le shader DXIL pour l'étudier (mode de diagnostic).
++    auto folder = env::getEnvVar("AMBRE_DXIL_DUMP");
++    if (!folder.empty()) {
++      auto name = folder + "\\" + Sha1HashState::compute(Bytecode.pShaderBytecode, Bytecode.BytecodeLength).string() + ".dxil";
++      if (FILE *existing = fopen(name.c_str(), "rb")) {
++        fclose(existing);
++      } else if (FILE *file = fopen(name.c_str(), "wb")) {
++        fwrite(Bytecode.pShaderBytecode, 1, Bytecode.BytecodeLength, file);
++        fclose(file);
++        WARN("ambre-dxil: shader enregistre ", name, " (", Bytecode.BytecodeLength, " octets)");
++      }
++    }
+     return E_NOTIMPL;
++  }
+ 
+   SM50Error error;
+   if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl, &error)) {
