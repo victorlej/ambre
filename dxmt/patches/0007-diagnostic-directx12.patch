@@ -1,5 +1,38 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 57b0332..bb847d2 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -368,15 +368,24 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   GetTimestampFrequency(UINT64 *pFrequency) {
+-    // FIXME: stub
+-    if (pFrequency)
+-      *pFrequency = 1;
++    // Ambre : horloge du processeur (QueryPerformanceCounter), en attendant de vrais
++    // horodatages GPU ; Unreal lit fréquence et calibrage au démarrage et s'arrête sinon.
++    if (!pFrequency)
++      return E_INVALIDARG;
++    LARGE_INTEGER frequency;
++    QueryPerformanceFrequency(&frequency);
++    *pFrequency = frequency.QuadPart;
+     return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
+-    return E_NOTIMPL;
++    if (!gpu_timestamp || !cpu_timestamp)
++      return E_INVALIDARG;
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
++    *gpu_timestamp = *cpu_timestamp = now.QuadPart;
++    return S_OK;
+   };
+ 
+   D3D12_COMMAND_QUEUE_DESC *STDMETHODCALLTYPE
 diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
-index 080353c..95fc695 100644
+index 080353c..d1dfb5b 100644
 --- a/src/d3d12/d3d12_device.cpp
 +++ b/src/d3d12/d3d12_device.cpp
 @@ -18,6 +18,9 @@
@@ -93,6 +126,35 @@ index 080353c..95fc695 100644
      ERR("CheckFeatureSupport: unhandled feature ", Feature);
      return E_NOTIMPL;
    };
+@@ -693,7 +729,8 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Evict(UINT ObjectCount, ID3D12Pageable *const *objects) {
+-    return E_NOTIMPL;
++    // Ambre : mémoire unifiée sur Mac, rien à évincer (comme MakeResident).
++    return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+@@ -863,7 +900,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   SetResidencyPriority(UINT ObjectCount, ID3D12Pageable *const *pObjects, const D3D12_RESIDENCY_PRIORITY *pPriorities) {
+-    return E_NOTIMPL;
++    return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+@@ -1103,7 +1140,8 @@ public:
+       D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable *const *ppObjects, ID3D12Fence *pFence,
+       UINT64 FenceValue
+   ) {
+-    return E_NOTIMPL;
++    // Ambre : tout est déjà résident (mémoire unifiée) ; on signale la barrière tout de suite.
++    return pFence ? pFence->Signal(FenceValue) : E_INVALIDARG;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
 diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
 index 22d5638..09f3c17 100644
 --- a/src/d3d12/d3d12_pipeline_graphics.cpp
