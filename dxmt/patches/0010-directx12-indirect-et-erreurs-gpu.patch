@@ -143,7 +143,7 @@ index 754dfc1..cb16149 100644
      }
      }
 diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
-index d1dfb5b..15559b0 100644
+index d1dfb5b..288e9a2 100644
 --- a/src/d3d12/d3d12_device.cpp
 +++ b/src/d3d12/d3d12_device.cpp
 @@ -20,6 +20,7 @@
@@ -202,7 +202,7 @@ index d1dfb5b..15559b0 100644
 +        "ambre-dx12: ", Function, " a echoue (", (uint32_t)hr, ") : dimension ", pDesc->Dimension,
 +        ", format ", pDesc->Format, ", ", pDesc->Width, "x", pDesc->Height, "x", pDesc->DepthOrArraySize, ", mips ",
 +        pDesc->MipLevels, ", echantillons ", pDesc->SampleDesc.Count, ", flags ", (uint32_t)pDesc->Flags,
-+        ", layout ", (uint32_t)pDesc->Layout
++        ", layout ", (uint32_t)pDesc->Layout, ", alignement ", pDesc->Alignment
 +    );
 +  }
 +
@@ -294,15 +294,28 @@ index d1dfb5b..15559b0 100644
            goto invalid;
          }
          resource_info.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-@@ -1205,7 +1263,7 @@ public:
+@@ -1204,9 +1262,19 @@ public:
+         resource_info.SizeInBytes = size_and_align.size;
        } else {
          WMTTextureInfo texture_info;
++        D3D12_RESOURCE_DESC default_aligned;
          if (FAILED(PopulateWMTTextureInfo(GetMTLDevice(), texture_info, *desc))) {
 -          DEBUG("GetResourceAllocationInfo: invalid texture descriptor\n");
-+          AmbreLogResourceFailure("GetResourceAllocationInfo (texture)", E_INVALIDARG, desc);
-           goto invalid;
+-          goto invalid;
++          // Ambre : comme Direct3D 12 sous Windows, une petite alignement (4 Ko) impossible n'est pas
++          // une erreur : on répond avec l'alignement par défaut (64 Ko). Sinon Unreal reçoit une
++          // taille impossible et son allocateur transitoire renvoie null (plantage).
++          default_aligned = *desc;
++          default_aligned.Alignment = 0;
++          if (desc->Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT ||
++              FAILED(PopulateWMTTextureInfo(GetMTLDevice(), texture_info, default_aligned))) {
++            AmbreLogResourceFailure("GetResourceAllocationInfo (texture)", E_INVALIDARG, desc);
++            goto invalid;
++          }
++          desc = &default_aligned;
          }
          auto size_and_align = GetMTLDevice().heapTextureSizeAndAlign(texture_info);
+         resource_info.SizeInBytes = size_and_align.size;
 diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
 index d6b48ef..953edcb 100644
 --- a/src/d3d12/d3d12_device.hpp
