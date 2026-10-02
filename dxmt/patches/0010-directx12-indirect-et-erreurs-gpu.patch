@@ -420,10 +420,17 @@ index 057e767..ea300f2 100644
    constexpr BufferAllocation *
    current() {
 diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
-index 8a8fb49..2061c0d 100644
+index 8a8fb49..24f826d 100644
 --- a/src/winemetal/unix/winemetal_unix.c
 +++ b/src/winemetal/unix/winemetal_unix.c
-@@ -113,6 +113,16 @@ _MTLCommandQueue_commandBuffer(void *obj) {
+@@ -1,5 +1,6 @@
+ #include <stdatomic.h>
+ #include <dlfcn.h>
++#include <unistd.h>
+ #import <Cocoa/Cocoa.h>
+ #import <ColorSync/ColorSync.h>
+ #import <CoreFoundation/CFRunLoop.h>
+@@ -113,6 +114,16 @@ _MTLCommandQueue_commandBuffer(void *obj) {
  static NTSTATUS
  _MTLCommandBuffer_commit(void *obj) {
    struct unixcall_generic_obj_noret *params = obj;
@@ -440,3 +447,31 @@ index 8a8fb49..2061c0d 100644
    [(id<MTLCommandBuffer>)params->handle commit];
    return STATUS_SUCCESS;
  }
+@@ -518,6 +529,27 @@ MTLMeshRenderPipelineDescriptor ()
+ 
+ #endif
+ 
++/* Ambre : validation de Metal à la demande (diagnostic). Si le fichier
++   ~/Library/Application Support/Allia/Logs/metal-validation existe, la couche de validation et
++   la validation des shaders sont activées avant que Metal ne s'initialise ; les erreurs vont
++   dans le journal au lieu d'arrêter le jeu. Lent : à n'utiliser que pour un essai. */
++__attribute__((constructor)) static void
++ambre_metal_validation(void) {
++  const char *home = getenv("HOME");
++  char flag[PATH_MAX];
++  if (!home)
++    return;
++  snprintf(flag, sizeof(flag), "%s/Library/Application Support/Allia/Logs/metal-validation", home);
++  if (access(flag, F_OK) != 0)
++    return;
++  setenv("MTL_DEBUG_LAYER", "1", 1);
++  setenv("MTL_DEBUG_LAYER_ERROR_MODE", "nslog", 1);
++  setenv("MTL_DEBUG_LAYER_WARNING_MODE", "nslog", 1);
++  setenv("MTL_SHADER_VALIDATION", "1", 1);
++  setenv("MTL_SHADER_VALIDATION_REPORT_TO_STDERR", "1", 1);
++  fprintf(stderr, "ambre-gpu: validation de Metal active (diagnostic)\n");
++}
++
+ /* Ambre : format DXGI (numéro) -> format de sommet Metal. */
+ static MTLVertexFormat
+ ambre_vertex_format(uint32_t dxgi) {

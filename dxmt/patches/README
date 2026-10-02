@@ -22,7 +22,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      Metal ; erreurs de la carte graphique et échecs de création de ressources dans le journal ;
      CreateCommittedResource1 et CreateHeap1 sans session protégée ; vues de tampons typés décalés
      de plus de 255 éléments ; petit alignement (4 Ko) impossible → alignement par défaut, comme
-     Windows (sinon l'allocateur transitoire d'Unreal reçoit null)
+     Windows (sinon l'allocateur transitoire d'Unreal reçoit null) ; validation de Metal à la
+     demande (fichier Allia/Logs/metal-validation)
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
