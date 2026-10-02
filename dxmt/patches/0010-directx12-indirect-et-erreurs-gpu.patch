@@ -112,6 +112,149 @@ index 0a046e2..1150699 100644
  
      if (is_compute)
        source
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index d1dfb5b..b015534 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -20,6 +20,7 @@
+ #include "d3d12_device_child.hpp"
+ #include "util_env.hpp"
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include "Metal.hpp"
+ #include "com/com_pointer.hpp"
+@@ -622,8 +623,8 @@ public:
+     return __ret;
+   };
+ 
+-  HRESULT STDMETHODCALLTYPE
+-  CreateCommittedResource(
++  HRESULT
++  CreateCommittedResourceImpl(
+       const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
+       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
+@@ -655,8 +656,8 @@ public:
+     return E_INVALIDARG;
+   };
+ 
+-  HRESULT STDMETHODCALLTYPE
+-  CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
++  HRESULT
++  CreateHeapImpl(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
+     HRESULT hr = S_OK;
+     hr = ValidateHeapProperties(&pDesc->Properties, pDesc->Flags, advertise_numa_);
+     if (FAILED(hr))
+@@ -664,8 +665,8 @@ public:
+     return dxmt::CreateHeap(this, pDesc, riid, ppHeap);
+   };
+ 
+-  HRESULT STDMETHODCALLTYPE
+-  CreatePlacedResource(
++  HRESULT
++  CreatePlacedResourceImpl(
+       ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
+@@ -697,11 +698,61 @@ public:
+     return E_INVALIDARG;
+   };
+ 
++  // Ambre : tout échec de création de ressource est écrit dans le journal (Unreal plante plus
++  // loin, sans message, quand une ressource manque).
++  static void
++  AmbreLogResourceFailure(const char *Function, HRESULT hr, const D3D12_RESOURCE_DESC *pDesc) {
++    static std::atomic<uint32_t> count = 0;
++    if (count++ >= 50 || !pDesc)
++      return;
++    WARN(
++        "ambre-dx12: ", Function, " a echoue (", (uint32_t)hr, ") : dimension ", pDesc->Dimension,
++        ", format ", pDesc->Format, ", ", pDesc->Width, "x", pDesc->Height, "x", pDesc->DepthOrArraySize, ", mips ",
++        pDesc->MipLevels, ", echantillons ", pDesc->SampleDesc.Count, ", flags ", (uint32_t)pDesc->Flags,
++        ", layout ", (uint32_t)pDesc->Layout
++    );
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  CreateCommittedResource(
++      const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
++      D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
++  ) {
++    HRESULT hr =
++        CreateCommittedResourceImpl(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
++    if (FAILED(hr))
++      AmbreLogResourceFailure("CreateCommittedResource", hr, pDesc);
++    return hr;
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  CreatePlacedResource(
++      ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
++      const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
++  ) {
++    HRESULT hr = CreatePlacedResourceImpl(pHeap, Offset, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
++    if (FAILED(hr))
++      AmbreLogResourceFailure("CreatePlacedResource", hr, pDesc);
++    return hr;
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
++    HRESULT hr = CreateHeapImpl(pDesc, riid, ppHeap);
++    if (FAILED(hr) && pDesc)
++      WARN(
++          "ambre-dx12: CreateHeap a echoue (", (uint32_t)hr, ") : ", pDesc->SizeInBytes,
++          " octets, type ", pDesc->Properties.Type, ", flags ", (uint32_t)pDesc->Flags
++      );
++    return hr;
++  }
++
+   HRESULT STDMETHODCALLTYPE
+   CreateReservedResource(
+       const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **resource
+   ) {
++    AmbreLogResourceFailure("CreateReservedResource (pas implemente)", E_NOTIMPL, pDesc);
+     return E_NOTIMPL;
+   };
+ 
+@@ -887,6 +938,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreatePipelineLibrary(const void *blob, SIZE_T blob_size, REFIID iid, void **lib) {
++    WARN("ambre-dx12: CreatePipelineLibrary non implemente");
+     return E_NOTIMPL;
+   };
+ 
+@@ -1148,6 +1200,7 @@ public:
+   CreateCommandList1(
+       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, D3D12_COMMAND_LIST_FLAGS Flags, REFIID riid, void **ppCommandList
+   ) {
++    WARN("ambre-dx12: CreateCommandList1 non implemente");
+     return E_NOTIMPL;
+   }
+ 
+@@ -1162,12 +1215,17 @@ public:
+       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
+       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
+   ) {
+-    return E_NOTIMPL;
++    // Ambre : sans session protégée, identique à CreateCommittedResource.
++    if (pSession)
++      return E_NOTIMPL;
++    return CreateCommittedResource(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppHeap) {
+-    return E_NOTIMPL;
++    if (pSession)
++      return E_NOTIMPL;
++    return CreateHeap(pDesc, riid, ppHeap);
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
 diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
 index d6b48ef..953edcb 100644
 --- a/src/d3d12/d3d12_device.hpp
