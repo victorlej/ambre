@@ -132,7 +132,7 @@ index 0a046e2..1150699 100644
      if (is_compute)
        source
 diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
-index 754dfc1..a5a3e0b 100644
+index 754dfc1..4ddcbb5 100644
 --- a/src/d3d12/d3d12_descriptor_heap.cpp
 +++ b/src/d3d12/d3d12_descriptor_heap.cpp
 @@ -18,6 +18,8 @@
@@ -249,7 +249,23 @@ index 754dfc1..a5a3e0b 100644
        break;
      }
      }
-@@ -596,6 +646,7 @@ public:
+@@ -344,6 +394,15 @@ public:
+       }
+     }
+     UpdateIR(Index);
++    // Ambre : compteur de UAV (Append/Consume, IncrementCounter) au format du Metal Shader Converter :
++    // vue R32Uint (tampon de texture) sur le compteur, décalage en éléments dans les métadonnées.
++    if (UAVBuffer && Counter) {
++      auto counter_view = Counter->createView({WMTPixelFormatR32Uint});
++      uint32_t remaining = 0;
++      mapped_ir_[Index].texture_view_id =
++          Counter->offsetViewResourceID(counter_view, CounterOffsetInBytes / 4, &remaining);
++      mapped_ir_[Index].metadata = IRBufferMetadata(Slice.byteLength, remaining, false);
++    }
+     return S_OK;
+   }
+ 
+@@ -596,6 +655,7 @@ public:
        GPUBaseAddress = argument_buffer_gpu_address_;
        IRBaseAddress = ir_buffer_->current()->gpuAddress();
        IRBuffer = ir_buffer_->current()->buffer();
@@ -257,7 +273,7 @@ index 754dfc1..a5a3e0b 100644
      } else {
        mapped_argument_buffer_ =
            reinterpret_cast<SamplerGPUStorage *>(malloc(samplers_.size() * sizeof(SamplerGPUStorage)));
-@@ -607,6 +658,7 @@ public:
+@@ -607,6 +667,7 @@ public:
  
    ~MTLD3D12SamplerDescriptorHeapImpl() {
       if (buffer_) {
@@ -470,10 +486,10 @@ index d6b48ef..953edcb 100644
    WMT::Reference<WMT::RenderPipelineState> render_resolver;
    WMT::Reference<WMT::ComputePipelineState> compute_resolver;
 diff --git a/src/dxmt/dxmt_buffer.cpp b/src/dxmt/dxmt_buffer.cpp
-index 9a4139d..ecefe96 100644
+index 9a4139d..e77add4 100644
 --- a/src/dxmt/dxmt_buffer.cpp
 +++ b/src/dxmt/dxmt_buffer.cpp
-@@ -154,6 +154,52 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
+@@ -154,6 +154,55 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
    allocation->version_ = version_;
  };
  
@@ -512,8 +528,11 @@ index 9a4139d..ecefe96 100644
 +  auto usage = WMTTextureUsageShaderRead;
 +  if (!allocation->flags().test(BufferAllocationFlag::GpuReadonly) &&
 +      (allocation->flags().test(BufferAllocationFlag::GpuManaged) ||
-+       allocation->flags().test(BufferAllocationFlag::GpuPrivate)))
++       allocation->flags().test(BufferAllocationFlag::GpuPrivate))) {
 +    usage |= WMTTextureUsageShaderWrite;
++    if (format == WMTPixelFormatR32Uint || format == WMTPixelFormatR32Sint)
++      usage |= WMTTextureUsageShaderAtomic; // compteurs de UAV
++  }
 +  info.usage = usage;
 +  auto view = allocation->obj_.newTexture(info, offset, total_length - offset);
 +  if (!view)
