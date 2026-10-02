@@ -1,0 +1,142 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 404eb40..757f8f3 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1600,6 +1600,75 @@ public:
+ 
+   void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
+ 
++  // Ambre : ExecuteIndirect avec un pipeline DXIL converti. Signatures simples (un seul
++  // argument) : une commande indirecte Metal par commande D3D12 ; les arguments de dessin D3D12
++  // ont la disposition qu'attendent les shaders convertis (index 4). Le tampon de compte
++  // (nombre de commandes écrit par la carte graphique) n'est pas encore lu : MaxCommandCount.
++  void
++  ExecuteIndirectConverted(
++      MTLD3D12CommandSignature *sig, UINT MaxCommandCount, uint64_t ArgBufferAddress, uint64_t CountBufferAddress
++  ) {
++    static std::atomic<uint32_t> warned = 0;
++    if (!sig->SimpleArgument || (CountBufferAddress && MaxCommandCount > 1)) {
++      if (warned++ < 10)
++        WARN(
++            "ambre-dx12: ExecuteIndirect non pris en charge (arguments ", sig->SimpleArgument ? "simples" : "multiples",
++            ", compte ", CountBufferAddress ? "GPU" : "aucun", ", ", MaxCommandCount, " commandes) : saute"
++        );
++      return;
++    }
++    uint64_t offset = 0;
++    auto allocation = device_->LookupBufferByVA(ArgBufferAddress, &offset);
++    if (!allocation)
++      return;
++    auto buffer = allocation->buffer().handle;
++    auto count = std::min(MaxCommandCount, 4096u);
++    if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
++      if (!PreDispatch())
++        return;
++      for (unsigned i = 0; i < count; i++) {
++        auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
++        cmd.type = WMTComputeCommandDispatchIndirect;
++        cmd.indirect_args_buffer = buffer;
++        cmd.indirect_args_offset = offset + i * sig->ByteStride;
++      }
++      return;
++    }
++    WMTPrimitiveType primitive_type;
++    uint32_t cp_count;
++    if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
++      return;
++    if (PreDraw() == DrawCallStatus::Invalid)
++      return;
++    bool indexed = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
++    for (unsigned i = 0; i < count; i++) {
++      auto args_offset = offset + i * sig->ByteStride;
++      EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, buffer, args_offset, 4);
++      auto [Ptr, InfoOffset] = allocator_->AllocateGPUHeap(32, 16);
++      memset(Ptr, 0, 32);
++      uint16_t index_type_ir = indexed ? (index_type == WMTIndexTypeUInt32 ? 2 : 1) : 0;
++      memcpy(Ptr, &index_type_ir, sizeof(index_type_ir));
++      reinterpret_cast<uint8_t *>(Ptr)[2] = (uint8_t)primitive_type;
++      EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, allocator_->gpu_heap_buffer_.handle, InfoOffset, 5);
++      if (indexed) {
++        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
++        cmd.type = WMTRenderCommandDrawIndexedIndirect;
++        cmd.primitive_type = primitive_type;
++        cmd.index_type = index_type;
++        cmd.index_buffer = index_buffer.handle;
++        cmd.index_buffer_offset = index_offset;
++        cmd.indirect_args_buffer = buffer;
++        cmd.indirect_args_offset = args_offset;
++      } else {
++        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indirect>();
++        cmd.type = WMTRenderCommandDrawIndirect;
++        cmd.primitive_type = primitive_type;
++        cmd.indirect_args_buffer = buffer;
++        cmd.indirect_args_offset = args_offset;
++      }
++    }
++  }
++
+   void STDMETHODCALLTYPE ExecuteIndirect(
+       ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
+       UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
+@@ -1619,11 +1688,7 @@ public:
+          pso_compute_->IsConvertedPipelineState) ||
+         (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ &&
+          pso_graphics_->IsConvertedPipelineState)) {
+-      static bool warned = false;
+-      if (!warned) {
+-        warned = true;
+-        WARN("ambre-dx12: ExecuteIndirect avec un pipeline DXIL : pas encore pris en charge (saute)");
+-      }
++      ExecuteIndirectConverted(sig, MaxCommandCount, ArgBufferAddress, CountBufferAddress);
+       return;
+     }
+     if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+diff --git a/src/d3d12/d3d12_command_signature.cpp b/src/d3d12/d3d12_command_signature.cpp
+index 0a046e2..1150699 100644
+--- a/src/d3d12/d3d12_command_signature.cpp
++++ b/src/d3d12/d3d12_command_signature.cpp
+@@ -174,6 +174,8 @@ public:
+     bool is_compute = side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+     CommandType = side_effect;
+     UpdateIndexBuffer = ib_index != ~0u;
++    SimpleArgument = pDesc->NumArgumentDescs == 1;
++    ByteStride = pDesc->ByteStride;
+ 
+     if (is_compute)
+       source
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index d6b48ef..953edcb 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -120,6 +120,10 @@ public:
+   UINT UpdateRootArguments : 1;
+   UINT UpdateVertexBuffers : 1;
+   UINT UpdateIndexBuffer   : 1;
++  /* Ambre : signature à un seul argument (dessin ou calcul), pas de mise à jour d'état :
++     ExecuteIndirect des pipelines DXIL convertis par des commandes indirectes Metal. */
++  UINT SimpleArgument      : 1;
++  UINT ByteStride = 0;
+ 
+   WMT::Reference<WMT::RenderPipelineState> render_resolver;
+   WMT::Reference<WMT::ComputePipelineState> compute_resolver;
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 8a8fb49..2061c0d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -113,6 +113,16 @@ _MTLCommandQueue_commandBuffer(void *obj) {
+ static NTSTATUS
+ _MTLCommandBuffer_commit(void *obj) {
+   struct unixcall_generic_obj_noret *params = obj;
++  /* Ambre : erreurs de la carte graphique écrites dans le journal (sinon invisibles). */
++  static atomic_int ambre_gpu_errors = 0;
++  [(id<MTLCommandBuffer>)params->handle addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
++    if (buffer.status != MTLCommandBufferStatusError)
++      return;
++    int count = atomic_fetch_add(&ambre_gpu_errors, 1) + 1;
++    if (count <= 20 || count % 1000 == 0)
++      fprintf(stderr, "ambre-gpu: erreur de la carte graphique n°%d : %s\n", count,
++              buffer.error ? [[buffer.error localizedDescription] UTF8String] : "?");
++  }];
+   [(id<MTLCommandBuffer>)params->handle commit];
+   return STATUS_SUCCESS;
+ }
