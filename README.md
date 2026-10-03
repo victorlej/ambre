@@ -46,6 +46,10 @@ Ambre Metal est notre version de DXMT : DirectX 11 traduit directement en Metal,
 | `0004-prise-present.patch` | Prise `AMBRE_PRESENT_PLUGIN_DIR` : un module d'extension est appelé à chaque image. |
 | `0005-image-par-dessus.patch` | Image d'un module d'extension posée par-dessus le jeu (le compteur Ambre, dessiné dans l'image). |
 | `0006-prise-affichage.patch` | Prise d'affichage `AMBRE_FRAME_PLUGIN` : un module macOS peut afficher l'image lui-même (génération d'images). |
+| `0007-diagnostic-directx12.patch` | DirectX 12 : horloge (`GetTimestampFrequency`, `GetClockCalibration`) et résidence mémoire (tout est résident en mémoire unifiée) ; diagnostic à la demande (`AMBRE_DXIL_DUMP` : Shader Model 6.6 annoncé, shaders DXIL du jeu enregistrés). |
+| `0008-directx12-shaders-dxil.patch` | DirectX 12, étape 1 : shaders DXIL (Shader Model 6) convertis par un module chargé à la demande (prise générique `AMBRE_DXIL_PLUGIN`), pipelines de calcul et de rendu. |
+| `0009-directx12-liaison-des-ressources.patch` | DirectX 12, étape 2 : tas de descripteurs miroirs au format du convertisseur, tables et arguments racine, tampons de sommets, paramètres de dessin. |
+| `0010-directx12-indirect-et-erreurs-gpu.patch` | DirectX 12 : `ExecuteIndirect` simple, erreurs de la carte graphique dans le journal, vues « tableau » des textures, compteurs de UAV, pipeline désactivé au lieu d'arrêter le jeu si un shader ne se convertit pas. |
 
 Règle : ici seulement des correctifs de jeux et des prises génériques ; les fonctions d'Ambre Pro restent dans leur module privé. Compilation : `.github/workflows/dxmt.yml` (appelé par la compilation d'Ambre).
 
@@ -86,9 +90,10 @@ Lancer une compilation à la main : onglet **Actions** → « Ambre — compilat
 | **1.6.1** | ✅ publiée | Ambre Metal sur la dernière version de DXMT (commit e86484e) : ombres de Skyrim corrigées |
 | **1.6.2** | ✅ publiée | Prise d'affichage (0006 de DXMT) pour la **génération d'images** d'Ambre Pro : 30 images calculées, 60 affichées |
 | **1.6.3** | ✅ publiée | Correctif 0007 restreint aux dossiers des programmes ; avec Ambre Pro 1.6.3 : génération d'images plus régulière (grille rattrapée en douceur), vrai compteur d'images affichées |
-| **1.6.4** | prête | Priorité des paquets réseau sur Mac (0010) : jeux qui utilisent le réseau de Steam (How to Fish) |
+| **1.6.4** | ✅ publiée | Priorité des paquets réseau sur Mac (0010) : jeux qui utilisent le réseau de Steam (How to Fish) |
+| **1.7.0** | ✅ publiée | Ambre Metal sur la dernière version de DXMT avec DirectX 12 expérimental (à activer jeu par jeu dans Allia) ; plus jamais de jeu figé en attendant l'accès au micro (0011) ; avec Ambre Pro 1.7.0 : génération d'images ×2, ×3, ×4 (jusqu'à 142 images/s sur un écran 144 Hz) |
+| **DirectX 12** | en cours | Shaders DXIL convertis pour Metal, liaison des ressources (Ambre Metal 0007-0010) : l'écran titre d'un premier jeu Unreal Engine 5 s'affiche |
 | **2.0** | prévue | MetalFX vérifié, cache des shaders Metal, choix automatique affiné |
-| **2.x** | prévue | DirectX 12 en Metal direct |
 | **Plus tard** | | Moteur arm64 natif avec émulation x86, si Apple l'autorise (Rosetta 2 réduite dès macOS 28) |
 
 Compilation : ~35 min sur GitHub Actions (DXVK 6 min, Wine ~16 min avec le cache, assemblage ~3 min, contrôles ~5 min). Une étiquette `v*` compile et publie ; un lancement manuel avec « Publier » fait de même sans rien installer sur un Mac.
