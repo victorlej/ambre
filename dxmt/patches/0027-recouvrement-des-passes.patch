@@ -1,0 +1,129 @@
+diff --git a/src/d3d12/d3d12_command_allocator.hpp b/src/d3d12/d3d12_command_allocator.hpp
+index 482792a..e106054 100644
+--- a/src/d3d12/d3d12_command_allocator.hpp
++++ b/src/d3d12/d3d12_command_allocator.hpp
+@@ -173,10 +173,15 @@ public:
+   T *
+   AllocatePass() {
+     auto p = (new (AllocateCPUHeap(sizeof(T), alignof(T))) T());
++    p->ambre_vertex_wait = ambre_barrier_pending; // Ambre (0027)
++    ambre_barrier_pending = false;
+     encoder_current = p;
+     return p;
+   };
+ 
++  /* Ambre (0027) : barrière vue depuis le dernier encodeur (true au début : rien n'est connu). */
++  bool ambre_barrier_pending = true;
++
+   template <typename T>
+   T *
+   AllocateCommandData(size_t Count) {
+diff --git a/src/d3d12/d3d12_command_encoder.hpp b/src/d3d12/d3d12_command_encoder.hpp
+index f2a940b..da2d936 100644
+--- a/src/d3d12/d3d12_command_encoder.hpp
++++ b/src/d3d12/d3d12_command_encoder.hpp
+@@ -36,6 +36,10 @@ struct EncoderData {
+   EncoderType type;
+   EncoderData *next = nullptr;
+   uint64_t id;
++  /* Ambre (0027) : une barrière demande que les étapes de sommets/calcul attendent l'encodeur
++     précédent (sinon une passe de rendu qui suit une passe de rendu n'attend qu'au stade des
++     fragments, et ses sommets avancent pendant les fragments de la précédente). */
++  bool ambre_vertex_wait = true;
+ };
+ 
+ struct ClearEncoderData : EncoderData {
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 9f0be87..f6d74c5 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1280,8 +1280,21 @@ public:
+   };
+ 
+   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+-    // TODO: in the initial implementation, we force synchronize everything and ignore barriers (which can be used as
+-    // optimization hints later)
++    // Tout reste synchronisé (un encodeur attend le précédent). Ambre (0027) : une barrière qui
++    // rend une ressource lisible ailleurs que dans les pixel shaders (sommets, constantes, index,
++    // arguments indirects, calcul, UAV, alias) force l'encodeur suivant à attendre dès les sommets.
++    constexpr UINT pixel_only = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_RENDER_TARGET |
++                                D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ |
++                                D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_COPY_SOURCE |
++                                D3D12_RESOURCE_STATE_RESOLVE_DEST | D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
++    for (UINT i = 0; i < Count && barriers; i++) {
++      auto &b = barriers[i];
++      if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.StateAfter ||
++          (b.Transition.StateAfter & ~pixel_only)) {
++        allocator_->ambre_barrier_pending = true;
++        break;
++      }
++    }
+   };
+ 
+   void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) { IMPLEMENT_ME };
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 2ad208f..3a81007 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -203,7 +203,7 @@ public:
+ 
+   // Ambre (diagnostic 0026) : toutes les 5 s, travail moyen par image.
+   uint64_t ambre_cmdbufs_ = 0, ambre_clears_ = 0, ambre_passes_ = 0, ambre_clear_then_pass_ = 0;
+-  uint64_t ambre_blits_ = 0, ambre_computes_ = 0, ambre_resolves_ = 0;
++  uint64_t ambre_blits_ = 0, ambre_computes_ = 0, ambre_resolves_ = 0, ambre_overlapped_ = 0;
+   std::chrono::steady_clock::time_point ambre_perf_since_ = std::chrono::steady_clock::now();
+   uint64_t ambre_perf_frames0_ = 0, ambre_perf_draws0_ = 0, ambre_perf_dispatches0_ = 0, ambre_perf_indirect0_ = 0, ambre_perf_icmd0_ = 0;
+ 
+@@ -222,7 +222,7 @@ public:
+       auto f = [&](uint64_t v) { return (uint64_t)(v / (double)frames + 0.5); };
+       WARN("ambre-perf: ", (uint64_t)(frames / seconds + 0.5), " images/s | par image : ", f(ambre_cmdbufs_),
+            " command buffers, ", f(ambre_passes_), " passes de rendu (", f(ambre_clear_then_pass_),
+-           " juste apres un effacement de leur cible), ", f(ambre_clears_), " effacements, ", f(ambre_computes_),
++           " juste apres un effacement de leur cible, ", f(ambre_overlapped_), " en recouvrement), ", f(ambre_clears_), " effacements, ", f(ambre_computes_),
+            " encodeurs de calcul, ", f(ambre_blits_), " copies, ", f(ambre_resolves_), " resolutions | ", f(draws),
+            " dessins, ", f(dispatches), " calculs, ", f(indirect), " indirects (", f(icmd), " commandes au maximum, tampon de compte ignore)");
+     }
+@@ -233,7 +233,7 @@ public:
+     ambre_perf_indirect0_ += indirect;
+     ambre_perf_icmd0_ += icmd;
+     ambre_cmdbufs_ = ambre_clears_ = ambre_passes_ = ambre_clear_then_pass_ = 0;
+-    ambre_blits_ = ambre_computes_ = ambre_resolves_ = 0;
++    ambre_blits_ = ambre_computes_ = ambre_resolves_ = ambre_overlapped_ = 0;
+   }
+ 
+   void STDMETHODCALLTYPE
+@@ -246,7 +246,10 @@ public:
+     for (unsigned i = 0; i < Count; i++) {
+       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+       EncoderData *current = pCommandList->entry;
+-      while (current) {
++      EncoderType ambre_previous = EncoderType::Null; // 0027 : encodeur précédent (dans cette liste)
++      for (EncoderData *ambre_prev = nullptr; current; ambre_prev = current, current = current->next) {
++        if (ambre_prev && ambre_prev->type != EncoderType::Null)
++          ambre_previous = ambre_prev->type;
+         switch (current->type) {
+         case EncoderType::Null:
+           break;
+@@ -352,7 +355,13 @@ public:
+             render_pass_info.visibility_result_type = data->visibility_buffer ? 1 : 0;
+           }
+           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+-          encoder.waitForFence(fence_, WMTRenderStageVertex);
++          // Ambre (0027) : après une passe de rendu (ou un effacement) et sans barrière qui touche
++          // les sommets, attente au stade des fragments seulement (recouvrement sommets/fragments).
++          bool ambre_overlap = !data->ambre_vertex_wait &&
++                               (ambre_previous == EncoderType::Render || ambre_previous == EncoderType::Clear);
++          if (ambre_overlap)
++            ambre_overlapped_++;
++          encoder.waitForFence(fence_, ambre_overlap ? WMTRenderStageFragment : WMTRenderStageVertex);
+           encoder.encodeCommands(&data->cmd_head);
+           encoder.updateFence(fence_, WMTRenderStageFragment);
+           encoder.endEncoding();
+@@ -401,7 +410,6 @@ public:
+           break;
+         }
+         }
+-        current = current->next;
+       }
+     }
+   };

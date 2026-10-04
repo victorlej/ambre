@@ -97,6 +97,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      buffers, passes de rendu (dont celles juste après un effacement de leur cible : fusion possible),
      effacements, encodeurs de calcul, copies, dessins, calculs, ExecuteIndirect et leur nombre
      maximal de commandes (le tampon de compte n'est pas lu). À retirer ensuite.
+0027 vitesse DirectX 12 : les barrières (ignorées jusque-là) servent enfin. Une passe de rendu qui
+     suit une passe de rendu ou un effacement, sans barrière vers un état lu hors des pixel shaders
+     (sommets, constantes, index, indirects, calcul, UAV, alias), attend la précédente au stade des
+     fragments et non plus des sommets : ses sommets avancent pendant les fragments de la
+     précédente (recouvrement des puces Apple). La chaîne de fences reste complète. Mesuré par 0026
+     (Clair Obscur, 4 oct. : ~95 passes, ~62 encodeurs de calcul, ~1 500 dessins par image).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
