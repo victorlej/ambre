@@ -48,6 +48,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      par les pipelines qu'elles utilisent, série de commandes suivie : au-delà de 3 s les pipelines
      en cours sont écrits dans le journal (« ambre-gpu: commande bloquee »), et les passes fautives
      sont nommées dans l'erreur si macOS interrompt la commande
+0016 dessins indexés directs : startIndexLocation du runtime Apple reçoit le décalage en octets
+     du tampon Metal (sous-allocation comprise), comme IRRuntimeDrawIndexedPrimitives, au lieu
+     du numéro d'index Direct3D. Le même décalage, calculé sur 64 bits, sert au dessin Metal.
+     Les arguments indirects gardent leur propre convention Apple. Test de contrat :
+     python3 tests/check-dx12-indexed-draw.py /chemin/vers/dxmt-avec-correctifs
+     (macOS avec les en-têtes du Metal Shader Converter installés dans /usr/local/include).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

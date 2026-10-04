@@ -1,0 +1,27 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -658,8 +658,13 @@ public:
+     DrawCallStatus status = PreDraw();
+     if (status == DrawCallStatus::Invalid)
+       return;
++    const uint64_t index_buffer_offset =
++        index_offset + uint64_t(StartVertexLocation) * (index_type == WMTIndexTypeUInt32 ? 4 : 2);
+     if (pso_graphics_->IsConvertedPipelineState) {
+-      uint32_t params[5] = {IndexCountPerInstance, InstanceCount, StartVertexLocation, (uint32_t)BaseVertexLocation,
++      // IRRuntimeDrawIndexedPrimitives supplies the byte offset into the Metal
++      // index buffer, including its suballocation offset, in startIndexLocation.
++      // Keep the shader arguments and the actual indexed draw in agreement.
++      uint32_t params[5] = {IndexCountPerInstance, InstanceCount, (uint32_t)index_buffer_offset, (uint32_t)BaseVertexLocation,
+                             StartInstanceLocation};
+       EncodeConvertedDrawParams(params, sizeof(params), index_type == WMTIndexTypeUInt32 ? 2 : 1, primitive_type);
+     }
+@@ -669,7 +674,7 @@ public:
+     cmd_draw.index_type = index_type;
+     cmd_draw.index_count = IndexCountPerInstance;
+     cmd_draw.index_buffer = index_buffer;
+-    cmd_draw.index_buffer_offset = index_offset + StartVertexLocation * (index_type == WMTIndexTypeUInt32 ? 4 : 2);
++    cmd_draw.index_buffer_offset = index_buffer_offset;
+     cmd_draw.instance_count = InstanceCount;
+     cmd_draw.base_vertex = BaseVertexLocation;
+     cmd_draw.base_instance = StartInstanceLocation;
