@@ -40,6 +40,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes0013 descripteurs nuls (tables, tampons de constantes, descripteurs racine à 0) des shaders DXIL
      convertis : tampon de 64 Ko de zéros au lieu de l'adresse 0, comme Direct3D 12 (lectures
      nulles au lieu de valeurs absurdes)
+0014 échantillonneurs statiques des shaders DXIL convertis : le convertisseur lit, juste après les
+     arguments racine, l'adresse d'une table de ces échantillonneurs ; elle n'était pas fournie
+     (échantillonneurs lus dans la mémoire voisine)
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
