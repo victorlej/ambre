@@ -36,7 +36,7 @@ index f658d3f..9f0be87 100644
      if (!sig->SimpleArgument || (CountBufferAddress && MaxCommandCount > 1)) {
        if (warned++ < 10)
 diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
-index 8aa8a3c..c712bc6 100644
+index 8aa8a3c..2ad208f 100644
 --- a/src/d3d12/d3d12_command_queue.cpp
 +++ b/src/d3d12/d3d12_command_queue.cpp
 @@ -24,11 +24,15 @@
@@ -109,7 +109,7 @@ index 8aa8a3c..c712bc6 100644
          case EncoderType::Clear: {
            auto data = static_cast<ClearEncoderData *>(current);
 +          ambre_clears_++;
-+          ambre_last_clear = data->attachment.texture();
++          ambre_last_clear = data->attachment.texture().handle;
            {
              WMTRenderPassInfo info;
              WMT::InitializeRenderPassInfo(info);
@@ -119,9 +119,9 @@ index 8aa8a3c..c712bc6 100644
            auto data = static_cast<RenderEncoderData *>(current);
 +          ambre_passes_++;
 +          if (ambre_last_clear) {
-+            bool same = data->depth.attachment && data->depth.attachment.texture() == ambre_last_clear;
++            bool same = data->depth.attachment && data->depth.attachment.texture().handle == ambre_last_clear;
 +            for (auto &color : data->colors)
-+              same = same || (color.attachment && color.attachment.texture() == ambre_last_clear);
++              same = same || (color.attachment && color.attachment.texture().handle == ambre_last_clear);
 +            if (same)
 +              ambre_clear_then_pass_++;
 +          }
