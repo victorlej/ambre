@@ -34,5 +34,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      diagnostic dx12-sans-indirect par WINEHOMEDIR ; prise d'extension appelée à chaque image du
      swapchain DirectX 12 (compteur et mesure)
 
+0012 garde-fou des commandes indirectes des pipelines DXIL : arguments recopiés par la carte
+     graphique avant usage (programme de sommets sans rastérisation dans la passe de rendu, petit
+     calcul avant les calculs indirects), arguments absurdes mis à zéro (> 16 M d'indices, > 1 M
+     d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

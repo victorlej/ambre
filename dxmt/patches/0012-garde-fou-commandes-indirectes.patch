@@ -1,0 +1,195 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index e03303b..c671605 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -18,6 +18,8 @@
+ 
+ #include "d3d12_command_allocator.hpp"
+ #include <atomic>
++#include <map>
++#include "thread.hpp"
+ #include <string>
+ #include "util_env.hpp"
+ #include "com/com_pointer.hpp"
+@@ -111,6 +113,87 @@ to_metal_primitive_type(D3D12_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType &primiti
+   return true;
+ }
+ 
++// Ambre : garde-fou des commandes indirectes. Les arguments écrits par la carte graphique sont
++// recopiés avant usage ; ceux qui sont absurdes (plus de 16 millions d'indices, de 1 million
++// d'instances, de 4 millions de groupes de calcul…) sont mis à zéro : un argument faux ne peut
++// plus occuper la carte graphique pendant des secondes (sous Windows, le pilote coupe ces
++// commandes ; sur Mac le jeu se figeait).
++static const char kAmbreClampSource[] = R"(
++#include <metal_stdlib>
++using namespace metal;
++struct AmbreClampArgs {
++  device const uint *src;
++  device uint *dst;
++  uint count;
++  uint stride;
++  uint kind;
++  uint pad;
++};
++vertex void ambre_clamp_draw(uint vid [[vertex_id]], constant AmbreClampArgs &a [[buffer(30)]]) {
++  if (vid >= a.count)
++    return;
++  device const uint *s = a.src + vid * a.stride;
++  device uint *d = a.dst + vid * 5;
++  uint n = a.kind == 1 ? 5 : 4;
++  for (uint i = 0; i < 5; i++)
++    d[i] = i < n ? s[i] : 0;
++  ulong total = ulong(d[0]) * ulong(max(d[1], 1u));
++  if (d[0] > (1u << 24) || d[1] > (1u << 20) || total > (1ul << 28)) {
++    d[0] = 0;
++    d[1] = 0;
++  }
++}
++kernel void ambre_clamp_dispatch(uint tid [[thread_position_in_grid]], constant AmbreClampArgs &a [[buffer(30)]]) {
++  if (tid >= a.count)
++    return;
++  device const uint *s = a.src + tid * a.stride;
++  device uint *d = a.dst + tid * 3;
++  uint x = s[0], y = s[1], z = s[2];
++  if (x > 65535 || y > 65535 || z > 65535 || ulong(x) * ulong(y) * ulong(z) > (1ul << 22)) {
++    x = 0;
++    y = 0;
++    z = 0;
++  }
++  d[0] = x;
++  d[1] = y;
++  d[2] = z;
++}
++)";
++
++struct AmbreClampPipelines {
++  WMT::Reference<WMT::RenderPipelineState> draw;
++  WMT::Reference<WMT::ComputePipelineState> dispatch;
++  bool tried = false;
++};
++
++static AmbreClampPipelines &
++AmbreClamp(WMT::Device device) {
++  static dxmt::mutex lock;
++  static std::map<obj_handle_t, AmbreClampPipelines> all;
++  std::unique_lock<dxmt::mutex> guard(lock);
++  auto &pipelines = all[device.handle];
++  if (pipelines.tried)
++    return pipelines;
++  pipelines.tried = true;
++  WMT::Reference<WMT::Error> err;
++  auto library = device.newLibraryWithSource(std::string_view(kAmbreClampSource, sizeof(kAmbreClampSource) - 1), err);
++  if (!library) {
++    ERR("ambre-dx12: garde-fou des commandes indirectes non compile : ", err.description().getUTF8String());
++    return pipelines;
++  }
++  WMTRenderPipelineInfo info;
++  WMT::InitializeRenderPipelineInfo(info);
++  info.rasterization_enabled = false;
++  auto draw_function = library.newFunction("ambre_clamp_draw");
++  info.vertex_function = draw_function.handle;
++  pipelines.draw = device.newRenderPipelineState(info, err);
++  auto dispatch_function = library.newFunction("ambre_clamp_dispatch");
++  pipelines.dispatch = device.newComputePipelineState(dispatch_function, err);
++  if (!pipelines.draw || !pipelines.dispatch)
++    ERR("ambre-dx12: garde-fou des commandes indirectes incomplet");
++  return pipelines;
++}
++
+ // `Graphics`CommandList is a really confusing name
+ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList> {
+ 
+@@ -1657,14 +1740,54 @@ public:
+         }
+       }
+     }
++    auto &clamp = AmbreClamp(device_->GetMTLDevice());
++    // Paramètres du garde-fou : source (arguments du jeu), copie bornée, nombre, pas, type.
++    auto clamp_params = [&](uint64_t ScratchOffset) {
++      auto [Params, ParamsOffset] = allocator_->AllocateGPUHeap(32, 16);
++      auto pointers = reinterpret_cast<uint64_t *>(Params);
++      pointers[0] = ArgBufferAddress;
++      pointers[1] = allocator_->gpu_heap_buffer_address_ + ScratchOffset;
++      auto words = reinterpret_cast<uint32_t *>(pointers + 2);
++      words[0] = count;
++      words[1] = sig->ByteStride / 4;
++      words[2] = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED ? 1 : 0;
++      words[3] = 0;
++      return ParamsOffset;
++    };
++
+     if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+       if (!PreDispatch())
+         return;
++      obj_handle_t args_buffer = buffer;
++      uint64_t args_offset = offset, args_stride = sig->ByteStride;
++      if (clamp.dispatch) {
++        auto [Scratch, ScratchOffset] = allocator_->AllocateGPUHeap(count * 12, 16);
++        auto ParamsOffset = clamp_params(ScratchOffset);
++        auto &setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
++        setpso.type = WMTComputeCommandSetPSO;
++        setpso.pso = clamp.dispatch;
++        setpso.threadgroup_size = {64, 1, 1};
++        auto &setbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
++        setbuf.type = WMTComputeCommandSetBuffer;
++        setbuf.buffer = allocator_->gpu_heap_buffer_.handle;
++        setbuf.offset = ParamsOffset;
++        setbuf.index = 30;
++        auto &run = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
++        run.type = WMTComputeCommandDispatch;
++        run.size = {(count + 63) / 64, 1, 1};
++        auto &restore = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
++        restore.type = WMTComputeCommandSetPSO;
++        restore.pso = pso_compute_->pso;
++        restore.threadgroup_size = pso_compute_->threadgroup_size;
++        args_buffer = allocator_->gpu_heap_buffer_.handle;
++        args_offset = ScratchOffset;
++        args_stride = 12;
++      }
+       for (unsigned i = 0; i < count; i++) {
+         auto &cmd = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
+         cmd.type = WMTComputeCommandDispatchIndirect;
+-        cmd.indirect_args_buffer = buffer;
+-        cmd.indirect_args_offset = offset + i * sig->ByteStride;
++        cmd.indirect_args_buffer = args_buffer;
++        cmd.indirect_args_offset = args_offset + i * args_stride;
+       }
+       return;
+     }
+@@ -1675,8 +1798,35 @@ public:
+     if (PreDraw() == DrawCallStatus::Invalid)
+       return;
+     bool indexed = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
++    uint64_t args_base = offset, args_stride = sig->ByteStride;
++    if (clamp.draw) {
++      auto [Scratch, ScratchOffset] = allocator_->AllocateGPUHeap(count * 20, 16);
++      auto ParamsOffset = clamp_params(ScratchOffset);
++      auto &setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
++      setpso.type = WMTRenderCommandSetPSO;
++      setpso.pso = clamp.draw;
++      EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, allocator_->gpu_heap_buffer_.handle, ParamsOffset, 30);
++      auto &run = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
++      run.type = WMTRenderCommandDraw;
++      run.primitive_type = WMTPrimitiveTypePoint;
++      run.vertex_start = 0;
++      run.vertex_count = count;
++      run.base_instance = 0;
++      run.instance_count = 1;
++      auto &barrier = allocator_->EncodeRenderCommand<wmtcmd_render_memory_barrier>();
++      barrier.type = WMTRenderCommandMemoryBarrier;
++      barrier.scope = WMTBarrierScopeBuffers;
++      barrier.stages_before = WMTRenderStageVertex;
++      barrier.stages_after = WMTRenderStageVertex;
++      auto &restore = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
++      restore.type = WMTRenderCommandSetPSO;
++      restore.pso = pso_graphics_->pso;
++      buffer = allocator_->gpu_heap_buffer_.handle;
++      args_base = ScratchOffset;
++      args_stride = 20;
++    }
+     for (unsigned i = 0; i < count; i++) {
+-      auto args_offset = offset + i * sig->ByteStride;
++      auto args_offset = args_base + i * args_stride;
+       EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, buffer, args_offset, 4);
+       auto [Ptr, InfoOffset] = allocator_->AllocateGPUHeap(32, 16);
+       memset(Ptr, 0, 32);
