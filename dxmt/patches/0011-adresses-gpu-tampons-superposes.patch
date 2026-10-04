@@ -79,6 +79,29 @@ index 288e9a2..500a29d 100644
    }
  
    InternalCommandLibrary &
+diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
+index 080fff1..4516090 100644
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -21,6 +21,7 @@
+ #include "dxgi_object.hpp"
+ #include "dxmt_hud_state.hpp"
+ #include "dxmt_presenter.hpp"
++#include "dxmt_ambre.hpp"
+ #include "dxmt_info.hpp"
+ #include "com/com_pointer.hpp"
+ #include "log/log.hpp"
+@@ -709,6 +710,10 @@ public:
+     if (PresentFlags & DXGI_PRESENT_TEST)
+       return hr;
+ 
++    // Ambre : prise d'extension à chaque image présentée, comme en DirectX 11 (mesure, compteur).
++    if (auto hook = dxmt::ambre::plugin().present)
++      hook();
++
+     double vsync_duration = std::max(
+         SyncInterval * 1.0 / (preferred_max_frame_rate ? preferred_max_frame_rate : init_refresh_rate_),
+         preferred_max_frame_rate ? 1.0 / preferred_max_frame_rate : 0
 diff --git a/src/dxmt/dxmt_buffer.hpp b/src/dxmt/dxmt_buffer.hpp
 index ea300f2..45dea05 100644
 --- a/src/dxmt/dxmt_buffer.hpp
