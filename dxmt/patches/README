@@ -93,6 +93,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      par tampon. Retire le test 0023.
      Validé par Victor le 4 oct. (Clair Obscur : structures affichées, comptes réels).
 0025 retire les diagnostics des requêtes d'occlusion (0020, 0022) : plus de lignes « ambre-occlusion: ».
+0026 diagnostic de vitesse DirectX 12 (journal « ambre-perf: », toutes les 5 s) : par image, command
+     buffers, passes de rendu (dont celles juste après un effacement de leur cible : fusion possible),
+     effacements, encodeurs de calcul, copies, dessins, calculs, ExecuteIndirect et leur nombre
+     maximal de commandes (le tampon de compte n'est pas lu). À retirer ensuite.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
