@@ -44,6 +44,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      (vérifiée sur 3 000 root signatures tirées au hasard) : constantes alignées sur 4 octets,
      tables et descripteurs sur 8 (DXMT : un mot de 64 bits par paramètre), puis l'adresse d'une
      table des échantillonneurs statiques, qui n'était pas fournie
+0015 mouchard des commandes bloquées sur la carte graphique : pipelines nommés, passes étiquetées
+     par les pipelines qu'elles utilisent, série de commandes suivie : au-delà de 3 s les pipelines
+     en cours sont écrits dans le journal (« ambre-gpu: commande bloquee »), et les passes fautives
+     sont nommées dans l'erreur si macOS interrompt la commande
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

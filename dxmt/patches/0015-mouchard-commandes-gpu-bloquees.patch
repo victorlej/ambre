@@ -1,0 +1,175 @@
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index bb68028..c425c87 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1,5 +1,6 @@
+ #include <stdatomic.h>
+ #include <dlfcn.h>
++#include <pthread.h>
+ #include <unistd.h>
+ #import <Cocoa/Cocoa.h>
+ #import <ColorSync/ColorSync.h>
+@@ -104,10 +105,75 @@ _NSAutoreleasePool_alloc_init(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Ambre : mouchard des commandes bloquées sur la carte graphique (diagnostic DirectX 12).
++   - chaque pipeline porte son nom (fonctions de sommets / pixels / calcul) ;
++   - chaque passe (encodeur) reçoit comme étiquette les pipelines qu'elle utilise ;
++   - chaque série de commandes en cours est suivie : au-delà de 3 s, ses pipelines sont écrits
++     dans le journal (« ambre-gpu: commande bloquee ») ; si macOS finit par l'interrompre, les
++     passes fautives sont nommées dans l'erreur. */
++#include <objc/runtime.h>
++static char ambre_pso_name_key;
++static __thread NSMutableArray<NSString *> *ambre_encoder_names;
++static __thread NSMutableArray<NSString *> *ambre_buffer_names;
++
++static void
++ambre_name_pso(id pso, NSString *name) {
++  if (pso && name)
++    objc_setAssociatedObject(pso, &ambre_pso_name_key, name, OBJC_ASSOCIATION_RETAIN);
++}
++#define AMBRE_NAME_PSO(pso, ...) \
++  do { @autoreleasepool { ambre_name_pso((id)(pso), [NSString stringWithFormat:__VA_ARGS__]); } } while (0)
++
++static void
++ambre_note_pso(id pso) {
++  @autoreleasepool {
++    NSString *name = pso ? objc_getAssociatedObject(pso, &ambre_pso_name_key) : nil;
++    if (!name)
++      return;
++    if (!ambre_encoder_names)
++      ambre_encoder_names = [[NSMutableArray alloc] init];
++    if (ambre_encoder_names.count < 24 && ![ambre_encoder_names containsObject:name])
++      [ambre_encoder_names addObject:name];
++  }
++}
++
++static NSMutableDictionary *ambre_inflight;
++static pthread_mutex_t ambre_inflight_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static void
++ambre_watch_start(void) {
++  static dispatch_once_t once;
++  dispatch_once(&once, ^{
++    ambre_inflight = [[NSMutableDictionary alloc] init];
++    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
++                                                     dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
++    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 5);
++    dispatch_source_set_event_handler(timer, ^{
++      double now = CFAbsoluteTimeGetCurrent();
++      pthread_mutex_lock(&ambre_inflight_lock);
++      for (NSNumber *key in ambre_inflight.allKeys) {
++        NSMutableDictionary *entry = ambre_inflight[key];
++        double age = now - [entry[@"start"] doubleValue];
++        int reported = [entry[@"reported"] intValue];
++        if ((reported == 0 && age > 3) || (reported == 1 && age > 10) || (reported == 2 && age > 30)) {
++          entry[@"reported"] = @(reported + 1);
++          fprintf(stderr, "ambre-gpu: commande bloquee depuis %.0f s : %s\n", age,
++                  [entry[@"names"] UTF8String]);
++        }
++      }
++      pthread_mutex_unlock(&ambre_inflight_lock);
++    });
++    dispatch_resume(timer);
++  });
++}
++
+ static NTSTATUS
+ _MTLCommandQueue_commandBuffer(void *obj) {
+   struct unixcall_generic_obj_obj_ret *params = obj;
+-  params->ret = (obj_handle_t)[(id<MTLCommandQueue>)params->handle commandBuffer];
++  MTLCommandBufferDescriptor *buffer_descriptor = [[MTLCommandBufferDescriptor alloc] init];
++  buffer_descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
++  params->ret = (obj_handle_t)[(id<MTLCommandQueue>)params->handle commandBufferWithDescriptor:buffer_descriptor];
++  [buffer_descriptor release];
+   return STATUS_SUCCESS;
+ }
+ 
+@@ -116,7 +182,24 @@ _MTLCommandBuffer_commit(void *obj) {
+   struct unixcall_generic_obj_noret *params = obj;
+   /* Ambre : erreurs de la carte graphique écrites dans le journal (sinon invisibles). */
+   static atomic_int ambre_gpu_errors = 0;
++  ambre_watch_start();
++  NSNumber *buffer_key = nil;
++  @autoreleasepool {
++    NSString *names = ambre_buffer_names ? [ambre_buffer_names componentsJoinedByString:@" | "] : @"?";
++    [ambre_buffer_names release];
++    ambre_buffer_names = nil;
++    buffer_key = [@((uintptr_t)params->handle) retain];
++    pthread_mutex_lock(&ambre_inflight_lock);
++    ambre_inflight[buffer_key] = [NSMutableDictionary dictionaryWithDictionary:@{
++      @"start": @(CFAbsoluteTimeGetCurrent()), @"names": names, @"reported": @0
++    }];
++    pthread_mutex_unlock(&ambre_inflight_lock);
++  }
+   [(id<MTLCommandBuffer>)params->handle addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
++    pthread_mutex_lock(&ambre_inflight_lock);
++    [ambre_inflight removeObjectForKey:buffer_key];
++    pthread_mutex_unlock(&ambre_inflight_lock);
++    [buffer_key release];
+     /* Ambre : commandes très longues sur la carte graphique (jeu figé : calcul interminable ?). */
+     static atomic_int ambre_gpu_slow = 0;
+     double gpu_time = buffer.GPUEndTime - buffer.GPUStartTime;
+@@ -131,6 +214,12 @@ _MTLCommandBuffer_commit(void *obj) {
+     if (count <= 20 || count % 1000 == 0)
+       fprintf(stderr, "ambre-gpu: erreur de la carte graphique n°%d : %s\n", count,
+               buffer.error ? [[buffer.error localizedDescription] UTF8String] : "?");
++    if (count <= 20 && buffer.error) {
++      NSArray *infos = buffer.error.userInfo[MTLCommandBufferEncoderInfoErrorKey];
++      for (id<MTLCommandBufferEncoderInfo> info in infos)
++        fprintf(stderr, "ambre-gpu:   passe %s : etat %ld : %s\n", [info.label UTF8String], (long)info.errorState,
++                [[info.debugSignposts componentsJoinedByString:@","] UTF8String]);
++    }
+   }];
+   [(id<MTLCommandBuffer>)params->handle commit];
+   return STATUS_SUCCESS;
+@@ -409,6 +498,7 @@ _MTLDevice_newComputePipelineState(void *obj) {
+   params->ret_pso =
+       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
+   params->ret_error = (obj_handle_t)err;
++  AMBRE_NAME_PSO(params->ret_pso, @"CS:%@", ((id<MTLFunction>)info->compute_function).name);
+   if (!err && info->binary_archive_for_serialization) {
+     [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor
+                                                                                                       error:&err];
+@@ -494,6 +584,16 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
+ static NTSTATUS
+ _MTLCommandEncoder_endEncoding(void *obj) {
+   struct unixcall_generic_obj_noret *params = obj;
++  if (ambre_encoder_names.count) @autoreleasepool {
++    NSString *label = [ambre_encoder_names componentsJoinedByString:@"+"];
++    ((id<MTLCommandEncoder>)params->handle).label = label.length > 400 ? [label substringToIndex:400] : label;
++    if (!ambre_buffer_names)
++      ambre_buffer_names = [[NSMutableArray alloc] init];
++    for (NSString *name in ambre_encoder_names)
++      if (ambre_buffer_names.count < 60 && ![ambre_buffer_names containsObject:name])
++        [ambre_buffer_names addObject:name];
++    [ambre_encoder_names removeAllObjects];
++  }
+   [(id<MTLCommandEncoder>)params->handle endEncoding];
+   return STATUS_SUCCESS;
+ }
+@@ -687,6 +787,7 @@ _MTLDevice_newRenderPipelineState(void *obj) {
+                                                                                            reflection:nil
+                                                                                                 error:&err];
+   params->ret_error = (obj_handle_t)err;
++  AMBRE_NAME_PSO(params->ret_pso, @"VS:%@/PS:%@", descriptor.vertexFunction.name, descriptor.fragmentFunction.name ?: @"-");
+   if (!err && info->binary_archive_for_serialization) {
+     [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor
+                                                                                                      error:&err];
+@@ -938,6 +1039,7 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
+     case WMTComputeCommandSetPSO: {
+       struct wmtcmd_compute_setpso *body = (struct wmtcmd_compute_setpso *)next;
+       [encoder setComputePipelineState:(id<MTLComputePipelineState>)body->pso];
++      ambre_note_pso((id)body->pso);
+       threadgroup_size.width = body->threadgroup_size.width;
+       threadgroup_size.height = body->threadgroup_size.height;
+       threadgroup_size.depth = body->threadgroup_size.depth;
+@@ -1095,6 +1197,7 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
+     case WMTRenderCommandSetPSO: {
+       struct wmtcmd_render_setpso *body = (struct wmtcmd_render_setpso *)next;
+       [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)body->pso];
++      ambre_note_pso((id)body->pso);
+       break;
+     }
+     case WMTRenderCommandSetDSSO: {
