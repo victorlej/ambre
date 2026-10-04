@@ -70,6 +70,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      type, résultats recopiés dans le tampon de destination. Horodatages et statistiques : pas encore.
 0020 diagnostic des requêtes d'occlusion (journal « ambre-occlusion: ») : part des résultats Metal
      à zéro, plus grand compte, requêtes résolues sans avoir été commencées. À retirer ensuite.
+0021 requêtes d'occlusion, suite : Metal remet par défaut les résultats de visibilité à zéro à
+     chaque nouvelle passe ; le tampon commun de 0019 étant attaché à toutes les passes, les comptes
+     étaient effacés avant d'être lus (0020 sur Clair Obscur : 4 096 résultats sur 4 096 à zéro en
+     jeu, structures qui disparaissent). Passes DirectX 12 avec requêtes en mode « additionner »
+     (MTLVisibilityResultTypeAccumulate, macOS 26 et plus ; champ visibility_result_type de
+     WMTRenderPassInfo, appelé par le runtime).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

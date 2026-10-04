@@ -1,0 +1,47 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index d3e2aad..8aa8a3c 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -295,6 +295,8 @@ public:
+             render_pass_info.render_target_width = data->render_target_width;
+             render_pass_info.render_target_height = data->render_target_height;
+             render_pass_info.visibility_buffer = data->visibility_buffer;
++            // Ambre : résultats additionnés d'une passe à l'autre (tampon commun à toutes les passes).
++            render_pass_info.visibility_result_type = data->visibility_buffer ? 1 : 0;
+           }
+           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+           encoder.waitForFence(fence_, WMTRenderStageVertex);
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index c425c87..88d1d2d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -569,6 +569,15 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
+   descriptor.renderTargetHeight = info->render_target_height;
+   descriptor.renderTargetWidth = info->render_target_width;
+   descriptor.visibilityResultBuffer = (id<MTLBuffer>)info->visibility_buffer;
++  /* Ambre : requêtes d'occlusion de DirectX 12. Leur tampon de visibilité sert à toutes les passes :
++     avec la remise à zéro par défaut, chaque nouvelle passe effaçait les comptes des précédentes
++     avant leur lecture (tout « caché »). Appel par le runtime : le SDK de compilation peut être
++     plus ancien que macOS 26. */
++  if (info->visibility_buffer && info->visibility_result_type) {
++    SEL set_type = sel_registerName("setVisibilityResultType:");
++    if ([descriptor respondsToSelector:set_type])
++      ((void (*)(id, SEL, NSInteger))objc_msgSend)(descriptor, set_type, (NSInteger)info->visibility_result_type);
++  }
+ 
+   if (info->tile_height && info->tile_width) {
+     descriptor.tileWidth = info->tile_width;
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index c665378..771e92f 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -696,6 +696,9 @@ struct WMTRenderPassInfo {
+   uint32_t render_target_height;
+   uint32_t render_target_width;
+   obj_handle_t visibility_buffer;
++  /* Ambre : 0 = Metal remet les résultats de visibilité à zéro à chaque passe (défaut),
++     1 = il les additionne d'une passe à l'autre (macOS 26 et plus). */
++  uint8_t visibility_result_type;
+ };
+ 
+ WINEMETAL_API obj_handle_t MTLCommandBuffer_renderCommandEncoder(obj_handle_t cmdbuf, struct WMTRenderPassInfo *info);
