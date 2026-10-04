@@ -1,0 +1,48 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index e716b42..23a55c1 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1745,6 +1745,16 @@ public:
+     QueryCount = std::min<UINT>(QueryCount, heap->VisibilitySlots.size() - StartIndex);
+     if (!QueryCount || !PreBlit())
+       return;
++    {
++      static std::atomic<uint32_t> resolves = 0, unset = 0, total = 0;
++      for (UINT i = 0; i < QueryCount; i++)
++        if (!heap->VisibilitySlots[StartIndex + i])
++          unset++;
++      total += QueryCount;
++      if ((resolves++ & 1023) == 0)
++        WARN("ambre-occlusion: ResolveQueryData type ", (uint32_t)Type, " : ", total.load(), " resultats copies dont ",
++             unset.load(), " jamais commences");
++    }
+     auto src = AmbreVisibilityBuffer(device_);
+     auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
+     // Copies regroupées quand les emplacements se suivent (cas courant).
+diff --git a/src/d3d12/d3d12_query_heap.cpp b/src/d3d12/d3d12_query_heap.cpp
+index 6eeec41..005b1ea 100644
+--- a/src/d3d12/d3d12_query_heap.cpp
++++ b/src/d3d12/d3d12_query_heap.cpp
+@@ -59,7 +59,21 @@ AmbreVisibilityBuffer(MTLD3D12Device *pDevice) {
+ uint32_t
+ AmbreAllocVisibilitySlot(MTLD3D12Device *pDevice) {
+   AmbreEnsureVisibility(pDevice);
+-  uint32_t slot = 1 + ambre_visibility_next.fetch_add(1) % (kAmbreVisibilitySlots - 1);
++  uint32_t n = ambre_visibility_next.fetch_add(1);
++  uint32_t slot = 1 + n % (kAmbreVisibilitySlots - 1);
++  // Diagnostic : toutes les 16 384 requêtes, bilan des 4 096 requêtes faites 32 768 requêtes plus
++  // tôt (la carte graphique en a fini) : part des résultats à zéro (« caché ») et plus grand compte.
++  if (ambre_visibility_mapped && n >= 36864 && (n & 16383) == 0) {
++    uint64_t zero = 0, max = 0;
++    for (uint32_t k = 0; k < 4096; k++) {
++      uint64_t v = ambre_visibility_mapped[1 + (n - 32768 + k) % (kAmbreVisibilitySlots - 1)];
++      if (!v)
++        zero++;
++      if (v > max)
++        max = v;
++    }
++    WARN("ambre-occlusion: ", n, " requetes, sur 4096 anciennes : ", zero, " a zero, plus grand compte ", max);
++  }
+   // Remis à zéro au moment de l'enregistrement : l'emplacement a servi il y a un tour complet de
+   // l'anneau, la carte graphique en a fini depuis longtemps.
+   if (ambre_visibility_mapped)

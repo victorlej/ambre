@@ -68,6 +68,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      visibilité Metal commun (anneau de 8 Mo, un emplacement neuf remis à zéro par requête,
      emplacement 0 = « visible » pour une requête jamais commencée), comptage ou booléen selon le
      type, résultats recopiés dans le tampon de destination. Horodatages et statistiques : pas encore.
+0020 diagnostic des requêtes d'occlusion (journal « ambre-occlusion: ») : part des résultats Metal
+     à zéro, plus grand compte, requêtes résolues sans avoir été commencées. À retirer ensuite.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
