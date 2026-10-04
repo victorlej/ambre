@@ -91,6 +91,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      0023 : zéro même sans test de profondeur). Anneau réparti sur 32 tampons de 256 Ko (emplacement
      → tampon + décalage), passe recommencée quand on change de tampon, copies de ResolveQueryData
      par tampon. Retire le test 0023.
+     Validé par Victor le 4 oct. (Clair Obscur : structures affichées, comptes réels).
+0025 retire les diagnostics des requêtes d'occlusion (0020, 0022) : plus de lignes « ambre-occlusion: ».
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

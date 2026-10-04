@@ -1,0 +1,175 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 0241724..f658d3f 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -475,15 +475,10 @@ public:
+       }
+     }
+ 
+-    if (!pso_graphics_ || pso_graphics_->IsDisabledPipelineState) {
+-      if (ambre_query_mode_ != WMTVisibilityResultModeDisabled) {
+-        static std::atomic<uint32_t> skipped = 0;
+-        if ((skipped++ & 1023) == 0)
+-          WARN("ambre-occlusion: dessin saute pendant une requete (", skipped.load(), " en tout), pipeline ",
+-               pso_graphics_ ? "desactive" : "absent");
+-      }
++    if (!pso_graphics_)
+       return DrawCallStatus::Invalid;
+-    }
++    if (pso_graphics_->IsDisabledPipelineState)
++      return DrawCallStatus::Invalid; // Ambre : shader non converti, dessin sauté
+ 
+     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
+       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
+@@ -646,40 +641,6 @@ public:
+     return DrawCallStatus::Ordinary;
+   }
+ 
+-  // Ambre (diagnostic 0022) : état d'un dessin fait pendant une requête d'occlusion, 1 sur 4 096.
+-  void
+-  AmbreLogQueryDraw(bool Indexed, UINT Count, UINT Instances, INT BaseVertex) {
+-    if (ambre_query_mode_ == WMTVisibilityResultModeDisabled)
+-      return;
+-    static std::atomic<uint32_t> draws = 0;
+-    if ((draws++ & 4095) != 0)
+-      return;
+-    auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+-    uint32_t vb_missing = 0, vb_slots = 0;
+-    for (unsigned slot = 0; slot < 32; slot++) {
+-      if (!(pso_graphics_->slot_mask & (1u << slot)))
+-        continue;
+-      vb_slots++;
+-      uint64_t offset = 0;
+-      if (!vertex_buffers_[slot].BufferLocation || !device_->LookupBufferByVA(vertex_buffers_[slot].BufferLocation, &offset))
+-        vb_missing++;
+-    }
+-    auto &vp = viewports[0];
+-    auto &sc = scissors[0];
+-    WARN("ambre-occlusion: dessin ", draws.load(), Indexed ? " indexe " : " ", Count, " x", Instances, " base ", BaseVertex,
+-         " | mode ", (uint32_t)ambre_query_mode_, " decalage ", ambre_query_offset_, " tampon ", render && render->visibility_buffer ? 1 : 0,
+-         " | passe : cibles ", render ? (uint32_t)render->render_target_count : 99, " profondeur ", render ? (uint32_t)render->dsv_planar_flags : 99,
+-         " lecture seule ", render ? (uint32_t)render->dsv_readonly_flags : 99,
+-         " | pipeline : converti ", pso_graphics_->IsConvertedPipelineState, " PS ", (uint32_t)pso_graphics_->ambre_has_ps,
+-         " cibles ", (uint32_t)pso_graphics_->ambre_num_rt, " masque ", (uint32_t)pso_graphics_->ambre_write_mask0,
+-         " test ", (uint32_t)pso_graphics_->ambre_depth_enable, " fonction ", (uint32_t)pso_graphics_->ambre_depth_func,
+-         " ecriture ", (uint32_t)pso_graphics_->ambre_depth_write, " stencil ", (uint32_t)pso_graphics_->ambre_stencil,
+-         " faces ", (uint32_t)pso_graphics_->cull_mode, " clip ", (uint32_t)pso_graphics_->depth_clip_mode,
+-         " | sommets : ", vb_slots, " tampons dont ", vb_missing, " introuvables, topologie ", (uint32_t)topology_,
+-         " | vue ", num_viewports, " : ", vp.TopLeftX, ",", vp.TopLeftY, " ", vp.Width, "x", vp.Height, " z ", vp.MinDepth, "-", vp.MaxDepth,
+-         " | ciseaux ", num_scissors, " : ", sc.left, ",", sc.top, " - ", sc.right, ",", sc.bottom);
+-  }
+-
+   void STDMETHODCALLTYPE
+   DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation) {
+     WMTPrimitiveType primitive_type;
+@@ -690,7 +651,6 @@ public:
+     if (status == DrawCallStatus::Invalid)
+       return;
+ 
+-    AmbreLogQueryDraw(false, VertexCountPerInstance, InstanceCount, 0);
+     if (pso_graphics_->IsConvertedPipelineState) {
+       uint32_t params[4] = {VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
+       EncodeConvertedDrawParams(params, sizeof(params), 0, primitive_type);
+@@ -716,7 +676,6 @@ public:
+     DrawCallStatus status = PreDraw();
+     if (status == DrawCallStatus::Invalid)
+       return;
+-    AmbreLogQueryDraw(true, IndexCountPerInstance, InstanceCount, BaseVertexLocation);
+     const uint64_t index_buffer_offset =
+         index_offset + uint64_t(StartVertexLocation) * (index_type == WMTIndexTypeUInt32 ? 4 : 2);
+     if (pso_graphics_->IsConvertedPipelineState) {
+@@ -1789,16 +1748,6 @@ public:
+     QueryCount = std::min<UINT>(QueryCount, heap->VisibilitySlots.size() - StartIndex);
+     if (!QueryCount || !PreBlit())
+       return;
+-    {
+-      static std::atomic<uint32_t> resolves = 0, unset = 0, total = 0;
+-      for (UINT i = 0; i < QueryCount; i++)
+-        if (!heap->VisibilitySlots[StartIndex + i])
+-          unset++;
+-      total += QueryCount;
+-      if ((resolves++ & 1023) == 0)
+-        WARN("ambre-occlusion: ResolveQueryData type ", (uint32_t)Type, " : ", total.load(), " resultats copies dont ",
+-             unset.load(), " jamais commences");
+-    }
+     auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
+     // Copies regroupées quand les emplacements se suivent dans un même tampon (cas courant).
+     for (UINT i = 0; i < QueryCount;) {
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index eae1474..e068ef7 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -193,9 +193,6 @@ public:
+   float scole_scale;
+   float depth_bias_clamp;
+   uint32_t forced_sample_count;
+-  /* Ambre (diagnostic 0022) : résumé du pipeline pour le journal des requêtes d'occlusion. */
+-  uint8_t ambre_has_ps = 0, ambre_depth_enable = 0, ambre_depth_func = 0, ambre_depth_write = 0;
+-  uint8_t ambre_num_rt = 0, ambre_write_mask0 = 0, ambre_stencil = 0;
+ 
+   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
+ 
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 25106df..36144bb 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -717,13 +717,6 @@ public:
+ 
+   virtual HRESULT
+   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
+-    ambre_has_ps = pDesc->PS.pShaderBytecode ? 1 : 0;
+-    ambre_depth_enable = pDesc->DepthStencilState.DepthEnable ? 1 : 0;
+-    ambre_depth_func = (uint8_t)pDesc->DepthStencilState.DepthFunc;
+-    ambre_depth_write = pDesc->DepthStencilState.DepthWriteMask == D3D12_DEPTH_WRITE_MASK_ALL;
+-    ambre_num_rt = (uint8_t)pDesc->NumRenderTargets;
+-    ambre_write_mask0 = pDesc->BlendState.RenderTarget[0].RenderTargetWriteMask;
+-    ambre_stencil = pDesc->DepthStencilState.StencilEnable ? 1 : 0;
+     if (IsDXIL(pDesc->VS)) {
+       HRESULT hr = InitializeConverted(pDesc);
+       if (FAILED(hr)) {
+diff --git a/src/d3d12/d3d12_query_heap.cpp b/src/d3d12/d3d12_query_heap.cpp
+index dc29fd3..1e2c7cf 100644
+--- a/src/d3d12/d3d12_query_heap.cpp
++++ b/src/d3d12/d3d12_query_heap.cpp
+@@ -81,22 +81,7 @@ AmbreVisibilityOffset(uint32_t slot) {
+ uint32_t
+ AmbreAllocVisibilitySlot(MTLD3D12Device *pDevice) {
+   AmbreEnsureVisibility(pDevice);
+-  uint32_t n = ambre_visibility_next.fetch_add(1);
+-  uint32_t slot = 1 + n % (kAmbreVisibilitySlots - 1);
+-  // Diagnostic : toutes les 16 384 requêtes, bilan des 4 096 requêtes faites 32 768 requêtes plus
+-  // tôt (la carte graphique en a fini) : part des résultats à zéro (« caché ») et plus grand compte.
+-  if (n >= 36864 && (n & 16383) == 0) {
+-    uint64_t zero = 0, max = 0;
+-    for (uint32_t k = 0; k < 4096; k++) {
+-      auto value = AmbreVisibilityValue(1 + (n - 32768 + k) % (kAmbreVisibilitySlots - 1));
+-      uint64_t v = value ? *value : 0;
+-      if (!v)
+-        zero++;
+-      if (v > max)
+-        max = v;
+-    }
+-    WARN("ambre-occlusion: ", n, " requetes, sur 4096 anciennes : ", zero, " a zero, plus grand compte ", max);
+-  }
++  uint32_t slot = 1 + ambre_visibility_next.fetch_add(1) % (kAmbreVisibilitySlots - 1);
+   // Remis à zéro au moment de l'enregistrement : l'emplacement a servi il y a un tour complet de
+   // l'anneau, la carte graphique en a fini depuis longtemps.
+   if (auto value = AmbreVisibilityValue(slot))
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 9572edb..88d1d2d 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -575,12 +575,8 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
+      plus ancien que macOS 26. */
+   if (info->visibility_buffer && info->visibility_result_type) {
+     SEL set_type = sel_registerName("setVisibilityResultType:");
+-    BOOL supported = [descriptor respondsToSelector:set_type];
+-    if (supported)
++    if ([descriptor respondsToSelector:set_type])
+       ((void (*)(id, SEL, NSInteger))objc_msgSend)(descriptor, set_type, (NSInteger)info->visibility_result_type);
+-    static atomic_int logged = 0; /* diagnostic 0022 */
+-    if (!atomic_exchange(&logged, 1))
+-      fprintf(stderr, "ambre-occlusion: resultats additionnes entre passes : %s\n", supported ? "oui" : "NON (macOS sans visibilityResultType)");
+   }
+ 
+   if (info->tile_height && info->tile_width) {
