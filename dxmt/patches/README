@@ -37,6 +37,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0012 garde-fou des commandes indirectes des pipelines DXIL : arguments recopiés par la carte
      graphique avant usage (programme de sommets sans rastérisation dans la passe de rendu, petit
      calcul avant les calculs indirects), arguments absurdes mis à zéro (> 16 M d'indices, > 1 M
-     d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes
+     d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes0013 descripteurs nuls (tables, tampons de constantes, descripteurs racine à 0) des shaders DXIL
+     convertis : tampon de 64 Ko de zéros au lieu de l'adresse 0, comme Direct3D 12 (lectures
+     nulles au lieu de valeurs absurdes)
+
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

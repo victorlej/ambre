@@ -1,0 +1,130 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index c671605..2aeb481 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -689,6 +689,11 @@ public:
+       if (!kind)
+         continue;
+       auto &value = out[pRootSig->SlotQwordOffsets[i]];
++      if (kind == 3) {
++        if (!value)
++          value = AmbreZeroBufferAddress(device_); // descripteur racine nul : zéros
++        continue;
++      }
+       if (value)
+         value = TranslateDescriptorTableAddress(value, kind == 2);
+     }
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 4ddcbb5..85ea1b3 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -104,6 +104,24 @@ UnregisterIRHeap(bool sampler, uint64_t base) {
+   ir_heaps[sampler].erase(base);
+ }
+ 
++uint64_t
++AmbreZeroBufferAddress(MTLD3D12Device *pDevice) {
++  static dxmt::mutex lock;
++  static Rc<Buffer> zero;
++  static uint64_t address = 0;
++  std::unique_lock<dxmt::mutex> guard(lock);
++  if (!address) {
++    zero = new Buffer(65536, pDevice->GetMTLDevice());
++    Flags<BufferAllocationFlag> flags;
++    zero->rename(zero->allocate(flags));
++    if (auto mapped = zero->current()->mappedMemory(0))
++      memset(mapped, 0, 65536);
++    pDevice->RegisterResidencyAndVA(zero->current());
++    address = zero->current()->gpuAddress();
++  }
++  return address;
++}
++
+ uint64_t
+ TranslateDescriptorTableAddress(uint64_t Address, bool Sampler) {
+   std::unique_lock<dxmt::mutex> lock(ir_heaps_lock);
+@@ -201,6 +219,7 @@ public:
+     entry = {};
+     switch (cpu.type) {
+     case ShaderVisibleDescriptorType::Null:
++      entry.gpu_va = AmbreZeroBufferAddress(device_); // lecture = zéro, comme Direct3D 12
+       break;
+     case ShaderVisibleDescriptorType::SRVTexture:
+     case ShaderVisibleDescriptorType::UAVTexture: {
+@@ -226,13 +245,15 @@ public:
+       break;
+     }
+     case ShaderVisibleDescriptorType::ConstantBuffer:
+-      entry.gpu_va = cpu.ConstantBuffer.address;
++      entry.gpu_va = cpu.ConstantBuffer.address ? cpu.ConstantBuffer.address : AmbreZeroBufferAddress(device_);
+       entry.metadata = IRBufferMetadata(cpu.ConstantBuffer.size, 0, false);
+       break;
+     case ShaderVisibleDescriptorType::UAVBuffer:
+     case ShaderVisibleDescriptorType::SRVBuffer: {
+-      if (!cpu.UAVBuffer.buffer)
++      if (!cpu.UAVBuffer.buffer) {
++        entry.gpu_va = AmbreZeroBufferAddress(device_);
+         break;
++      }
+       entry.gpu_va = cpu.UAVBuffer.buffer->current()->gpuAddress() + cpu.UAVBuffer.slice.byteOffset;
+       entry.metadata = IRBufferMetadata(cpu.UAVBuffer.slice.byteLength, 0, false);
+       break;
+@@ -240,8 +261,10 @@ public:
+     case ShaderVisibleDescriptorType::UAVTexelBuffer:
+     case ShaderVisibleDescriptorType::SRVTexelBuffer: {
+       auto &texel = cpu.UAVTexelBuffer;
+-      if (!texel.buffer)
++      if (!texel.buffer) {
++        entry.gpu_va = AmbreZeroBufferAddress(device_);
+         break;
++      }
+       // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
+       // décaler la vue que de 255 éléments : au-delà, vue propre qui commence au bon endroit.
+       entry.gpu_va = texel.buffer->current()->gpuAddress();
+diff --git a/src/d3d12/d3d12_descriptor_heap.hpp b/src/d3d12/d3d12_descriptor_heap.hpp
+index da38ce1..488cb08 100644
+--- a/src/d3d12/d3d12_descriptor_heap.hpp
++++ b/src/d3d12/d3d12_descriptor_heap.hpp
+@@ -197,4 +197,9 @@ public:
+    soit le tas visible par les shaders d'où elle vient. 0 si l'adresse n'appartient à aucun tas. */
+ uint64_t TranslateDescriptorTableAddress(uint64_t Address, bool Sampler);
+ 
++/* Ambre : adresse GPU d'un petit tampon rempli de zéros (64 Ko), pour les descripteurs nuls et
++   les descripteurs racine à l'adresse 0 : sous Direct3D 12 leur lecture renvoie zéro ; sans lui,
++   les shaders convertis lisaient l'adresse 0 + décalage (valeurs absurdes, boucles sans fin). */
++uint64_t AmbreZeroBufferAddress(class MTLD3D12Device *pDevice);
++
+ } // namespace dxmt
+\ No newline at end of file
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 79d1827..7e99707 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -106,8 +106,8 @@ public:
+   uint32_t ParameterSlots;
+   uint32_t const *SlotQwordOffsets;
+   /* Ambre : nature de chaque paramètre (0 constantes ou descripteur racine, 1 table de
+-     CBV/SRV/UAV, 2 table d'échantillonneurs), pour traduire les adresses de tables vers le
+-     format du Metal Shader Converter. La disposition des mots de 64 bits est la même. */
++     CBV/SRV/UAV, 2 table d'échantillonneurs, 3 descripteur racine), pour traduire les adresses de
++     tables vers le format du Metal Shader Converter. La disposition des mots de 64 bits est la même. */
+   uint8_t const *SlotTableKinds;
+ 
+   size_t NumStaticSamplers;
+diff --git a/src/d3d12/d3d12_root_signature.cpp b/src/d3d12/d3d12_root_signature.cpp
+index 7ad86df..66b6765 100644
+--- a/src/d3d12/d3d12_root_signature.cpp
++++ b/src/d3d12/d3d12_root_signature.cpp
+@@ -462,6 +462,12 @@ public:
+     table_kinds_.assign(desc.NumParameters, 0);
+     for (unsigned i = 0; i < desc.NumParameters; i++) {
+       auto &parameter = desc.pParameters[i];
++      if (parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV ||
++          parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_SRV ||
++          parameter.ParameterType == D3D12_ROOT_PARAMETER_TYPE_UAV) {
++        table_kinds_[i] = 3; // descripteur racine (adresse GPU)
++        continue;
++      }
+       if (parameter.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+         continue;
+       bool sampler = parameter.DescriptorTable.NumDescriptorRanges &&
