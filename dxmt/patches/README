@@ -81,6 +81,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      fonction de profondeur, faces), les tampons de sommets introuvables, la vue et les ciseaux ;
      dessins sautés pendant une requête ; mode « additionner » de Metal disponible ou non.
      0021 seul n'a rien changé (résultats toujours à zéro). À retirer ensuite.
+0023 TEST de diagnostic (à retirer) : pendant une requête d'occlusion, test de profondeur ignoré.
+     Des comptes non nuls → les boîtes de test étaient cachées par la profondeur ; toujours zéro →
+     Metal ne compte pas ces dessins (pipeline sans pixel shader ?). Tout est alors « visible ».
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

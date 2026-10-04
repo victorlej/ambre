@@ -1,0 +1,36 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 8dbb557..e4ce153 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -494,6 +494,15 @@ public:
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags,
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_readonly_flags
+       );
++      // Ambre (test 0023, diagnostic) : pendant une requête d'occlusion, profondeur ignorée. Si Metal
++      // compte alors des points, les boîtes étaient cachées par la profondeur ; sinon, c'est le
++      // comptage lui-même qui ne se fait pas.
++      if (ambre_query_mode_ != WMTVisibilityResultModeDisabled) {
++        static std::atomic<bool> said = false;
++        if (!said.exchange(true))
++          WARN("ambre-occlusion: test 0023 actif : profondeur ignoree pendant les requetes");
++        cmd_setdsso.depth_stencil_state = device_->default_depth_stencil_state;
++      }
+ 
+       auto &cmd_setrs = allocator_->EncodeRenderCommand<wmtcmd_render_setrasterizerstate>();
+       cmd_setrs.type = WMTRenderCommandSetRasterizerState;
+@@ -1741,6 +1750,7 @@ public:
+     uint32_t slot = AmbreAllocVisibilitySlot(device_);
+     heap->VisibilitySlots[Index] = slot;
+     ambre_query_used_ = true;
++    dirty_state_.set(DirtyState::GraphicsPipelineState); // test 0023
+     ambre_query_offset_ = uint64_t(slot) * 8;
+     ambre_query_mode_ =
+         Type == D3D12_QUERY_TYPE_OCCLUSION ? WMTVisibilityResultModeCounting : WMTVisibilityResultModeBoolean;
+@@ -1760,6 +1770,7 @@ public:
+     if (ambre_query_mode_ == WMTVisibilityResultModeDisabled)
+       return;
+     ambre_query_mode_ = WMTVisibilityResultModeDisabled;
++    dirty_state_.set(DirtyState::GraphicsPipelineState); // test 0023
+     if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render &&
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->visibility_buffer)
+       AmbreEncodeVisibilityMode(WMTVisibilityResultModeDisabled, 0);
