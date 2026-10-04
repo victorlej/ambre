@@ -84,6 +84,13 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0023 TEST de diagnostic (à retirer) : pendant une requête d'occlusion, test de profondeur ignoré.
      Des comptes non nuls → les boîtes de test étaient cachées par la profondeur ; toujours zéro →
      Metal ne compte pas ces dessins (pipeline sans pixel shader ?). Tout est alors « visible ».
+0024 requêtes d'occlusion, VRAIE CAUSE : sur puce Apple, Metal ne compte qu'aux décalages < 256 Ko
+     d'un tampon de visibilité ; au-delà il n'écrit rien. L'anneau de 0019 (un tampon de 8 Mo)
+     marchait pour les 32 768 premières requêtes (chargement) puis tout valait zéro en jeu
+     (structures de Clair Obscur éliminées, prouvé par 0022 : décalage 262 152 = premier à zéro ;
+     0023 : zéro même sans test de profondeur). Anneau réparti sur 32 tampons de 256 Ko (emplacement
+     → tampon + décalage), passe recommencée quand on change de tampon, copies de ResolveQueryData
+     par tampon. Retire le test 0023.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

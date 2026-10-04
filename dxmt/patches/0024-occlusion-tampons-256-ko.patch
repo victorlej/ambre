@@ -1,0 +1,219 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index e4ce153..0241724 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -207,6 +207,7 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+   // Ambre : requête d'occlusion en cours (mode Metal et emplacement dans le tampon de visibilité).
+   WMTVisibilityResultMode ambre_query_mode_ = WMTVisibilityResultModeDisabled;
+   uint64_t ambre_query_offset_ = 0;
++  uint32_t ambre_query_slot_ = 0; // dernier emplacement : choisit le tampon de visibilité des passes
+   bool ambre_query_used_ = false; // dès la 1re requête, toutes les passes ont le tampon de visibilité
+ 
+   uint64_t index_buffer_address;
+@@ -253,6 +254,7 @@ public:
+   ResetState(ID3D12PipelineState *pInitialPipelineState) {
+     ambre_query_mode_ = WMTVisibilityResultModeDisabled;
+     ambre_query_offset_ = 0;
++    ambre_query_slot_ = 0;
+     ambre_query_used_ = false;
+     pso_graphics_ = nullptr;
+     pso_compute_ = nullptr;
+@@ -467,7 +469,7 @@ public:
+       // suite si une requête est en cours). Le tampon reste sur les passes suivantes pour ne pas
+       // couper une passe à chaque requête.
+       if (ambre_query_used_) {
+-        render->visibility_buffer = AmbreVisibilityBuffer(device_);
++        render->visibility_buffer = AmbreVisibilityBuffer(device_, ambre_query_slot_);
+         if (ambre_query_mode_ != WMTVisibilityResultModeDisabled)
+           AmbreEncodeVisibilityMode(ambre_query_mode_, ambre_query_offset_);
+       }
+@@ -494,15 +496,6 @@ public:
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_planar_flags,
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->dsv_readonly_flags
+       );
+-      // Ambre (test 0023, diagnostic) : pendant une requête d'occlusion, profondeur ignorée. Si Metal
+-      // compte alors des points, les boîtes étaient cachées par la profondeur ; sinon, c'est le
+-      // comptage lui-même qui ne se fait pas.
+-      if (ambre_query_mode_ != WMTVisibilityResultModeDisabled) {
+-        static std::atomic<bool> said = false;
+-        if (!said.exchange(true))
+-          WARN("ambre-occlusion: test 0023 actif : profondeur ignoree pendant les requetes");
+-        cmd_setdsso.depth_stencil_state = device_->default_depth_stencil_state;
+-      }
+ 
+       auto &cmd_setrs = allocator_->EncodeRenderCommand<wmtcmd_render_setrasterizerstate>();
+       cmd_setrs.type = WMTRenderCommandSetRasterizerState;
+@@ -1750,16 +1743,16 @@ public:
+     uint32_t slot = AmbreAllocVisibilitySlot(device_);
+     heap->VisibilitySlots[Index] = slot;
+     ambre_query_used_ = true;
+-    dirty_state_.set(DirtyState::GraphicsPipelineState); // test 0023
+-    ambre_query_offset_ = uint64_t(slot) * 8;
++    ambre_query_slot_ = slot;
++    ambre_query_offset_ = AmbreVisibilityOffset(slot);
+     ambre_query_mode_ =
+         Type == D3D12_QUERY_TYPE_OCCLUSION ? WMTVisibilityResultModeCounting : WMTVisibilityResultModeBoolean;
+     if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render) {
+       auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+-      if (render->visibility_buffer)
++      if (render->visibility_buffer == AmbreVisibilityBuffer(device_, slot))
+         AmbreEncodeVisibilityMode(ambre_query_mode_, ambre_query_offset_);
+       else
+-        allocator_->InvalidateCurrentPass(); // la passe suivante aura le tampon de visibilité
++        allocator_->InvalidateCurrentPass(); // la passe suivante aura le bon tampon de visibilité
+     }
+   };
+ 
+@@ -1770,7 +1763,6 @@ public:
+     if (ambre_query_mode_ == WMTVisibilityResultModeDisabled)
+       return;
+     ambre_query_mode_ = WMTVisibilityResultModeDisabled;
+-    dirty_state_.set(DirtyState::GraphicsPipelineState); // test 0023
+     if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render &&
+         static_cast<RenderEncoderData *>(allocator_->encoder_current)->visibility_buffer)
+       AmbreEncodeVisibilityMode(WMTVisibilityResultModeDisabled, 0);
+@@ -1807,19 +1799,20 @@ public:
+         WARN("ambre-occlusion: ResolveQueryData type ", (uint32_t)Type, " : ", total.load(), " resultats copies dont ",
+              unset.load(), " jamais commences");
+     }
+-    auto src = AmbreVisibilityBuffer(device_);
+     auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
+-    // Copies regroupées quand les emplacements se suivent (cas courant).
++    // Copies regroupées quand les emplacements se suivent dans un même tampon (cas courant).
+     for (UINT i = 0; i < QueryCount;) {
+       uint32_t first = heap->VisibilitySlots[StartIndex + i];
++      auto src = AmbreVisibilityBuffer(device_, first);
+       UINT run = 1;
+-      while (first && i + run < QueryCount && heap->VisibilitySlots[StartIndex + i + run] == first + run)
++      while (first && i + run < QueryCount && heap->VisibilitySlots[StartIndex + i + run] == first + run &&
++             AmbreVisibilityBuffer(device_, first + run) == src)
+         run++;
+       auto &cmd_cp = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+       cmd_cp.type = WMTBlitCommandCopyFromBufferToBuffer;
+       cmd_cp.src = src;
+       cmd_cp.dst = dst;
+-      cmd_cp.src_offset = uint64_t(first) * 8;
++      cmd_cp.src_offset = AmbreVisibilityOffset(first);
+       cmd_cp.dst_offset = AlignedDstBufferOffset + uint64_t(i) * 8;
+       cmd_cp.copy_length = uint64_t(run) * 8;
+       i += run;
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 43c73e7..eae1474 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -152,8 +152,10 @@ public:
+   std::vector<uint32_t> VisibilitySlots;
+ };
+ 
+-/* Ambre : tampon de visibilité commun (anneau d'emplacements de 8 octets, l'emplacement 0 vaut 1). */
+-obj_handle_t AmbreVisibilityBuffer(class MTLD3D12Device *pDevice);
++/* Ambre : tampons de visibilité communs (anneau d'emplacements de 8 octets réparti sur des tampons
++   de 256 Ko, limite de Metal ; l'emplacement 0 vaut 1). */
++obj_handle_t AmbreVisibilityBuffer(class MTLD3D12Device *pDevice, uint32_t slot);
++uint64_t AmbreVisibilityOffset(uint32_t slot);
+ uint32_t AmbreAllocVisibilitySlot(class MTLD3D12Device *pDevice);
+ 
+ class MTLD3D12PipelineState : public ID3D12PipelineState {
+diff --git a/src/d3d12/d3d12_query_heap.cpp b/src/d3d12/d3d12_query_heap.cpp
+index 005b1ea..dc29fd3 100644
+--- a/src/d3d12/d3d12_query_heap.cpp
++++ b/src/d3d12/d3d12_query_heap.cpp
+@@ -25,35 +25,57 @@
+ namespace dxmt {
+ 
+ namespace {
+-constexpr uint32_t kAmbreVisibilitySlots = 1u << 20; // 8 Mo : des centaines d'images d'avance
++/* Ambre (0024) : Metal ne compte qu'aux décalages < 256 Ko d'un tampon de visibilité (limite des
++   puces Apple ; au-delà, rien n'est écrit : en jeu toutes les requêtes valaient zéro). L'anneau est
++   donc fait de 32 tampons de 256 Ko : un emplacement = un tampon + un décalage < 256 Ko. */
++constexpr uint32_t kAmbreSlotsPerBuffer = 32768; // 256 Ko
++constexpr uint32_t kAmbreVisibilityBuffers = 32;
++constexpr uint32_t kAmbreVisibilitySlots = kAmbreSlotsPerBuffer * kAmbreVisibilityBuffers; // 8 Mo en tout
+ dxmt::mutex ambre_visibility_lock;
+-Rc<Buffer> ambre_visibility;
+-uint64_t *ambre_visibility_mapped = nullptr;
+-obj_handle_t ambre_visibility_handle = 0;
++Rc<Buffer> ambre_visibility[kAmbreVisibilityBuffers];
++uint64_t *ambre_visibility_mapped[kAmbreVisibilityBuffers] = {};
++obj_handle_t ambre_visibility_handle[kAmbreVisibilityBuffers] = {};
++std::atomic<bool> ambre_visibility_ready = false;
+ std::atomic<uint32_t> ambre_visibility_next = 0;
+ 
+ void
+ AmbreEnsureVisibility(MTLD3D12Device *pDevice) {
++  if (ambre_visibility_ready.load(std::memory_order_acquire))
++    return;
+   std::unique_lock<dxmt::mutex> guard(ambre_visibility_lock);
+-  if (ambre_visibility_handle)
++  if (ambre_visibility_ready.load(std::memory_order_relaxed))
+     return;
+-  ambre_visibility = new Buffer(uint64_t(kAmbreVisibilitySlots) * 8, pDevice->GetMTLDevice());
+-  Flags<BufferAllocationFlag> flags;
+-  ambre_visibility->rename(ambre_visibility->allocate(flags));
+-  ambre_visibility_mapped = (uint64_t *)ambre_visibility->current()->mappedMemory(0);
+-  if (ambre_visibility_mapped) {
+-    memset(ambre_visibility_mapped, 0, uint64_t(kAmbreVisibilitySlots) * 8);
+-    ambre_visibility_mapped[0] = 1; // requête jamais commencée : « visible »
++  for (uint32_t i = 0; i < kAmbreVisibilityBuffers; i++) {
++    ambre_visibility[i] = new Buffer(uint64_t(kAmbreSlotsPerBuffer) * 8, pDevice->GetMTLDevice());
++    Flags<BufferAllocationFlag> flags;
++    ambre_visibility[i]->rename(ambre_visibility[i]->allocate(flags));
++    ambre_visibility_mapped[i] = (uint64_t *)ambre_visibility[i]->current()->mappedMemory(0);
++    if (ambre_visibility_mapped[i])
++      memset(ambre_visibility_mapped[i], 0, uint64_t(kAmbreSlotsPerBuffer) * 8);
++    pDevice->RegisterResidencyAndVA(ambre_visibility[i]->current());
++    ambre_visibility_handle[i] = ambre_visibility[i]->current()->buffer().handle;
+   }
+-  pDevice->RegisterResidencyAndVA(ambre_visibility->current());
+-  ambre_visibility_handle = ambre_visibility->current()->buffer().handle;
++  if (ambre_visibility_mapped[0])
++    ambre_visibility_mapped[0][0] = 1; // emplacement 0 : requête jamais commencée, « visible »
++  ambre_visibility_ready.store(true, std::memory_order_release);
++}
++
++uint64_t *
++AmbreVisibilityValue(uint32_t slot) {
++  auto mapped = ambre_visibility_mapped[slot / kAmbreSlotsPerBuffer];
++  return mapped ? mapped + slot % kAmbreSlotsPerBuffer : nullptr;
+ }
+ } // namespace
+ 
+ obj_handle_t
+-AmbreVisibilityBuffer(MTLD3D12Device *pDevice) {
++AmbreVisibilityBuffer(MTLD3D12Device *pDevice, uint32_t slot) {
+   AmbreEnsureVisibility(pDevice);
+-  return ambre_visibility_handle;
++  return ambre_visibility_handle[(slot % kAmbreVisibilitySlots) / kAmbreSlotsPerBuffer];
++}
++
++uint64_t
++AmbreVisibilityOffset(uint32_t slot) {
++  return uint64_t(slot % kAmbreSlotsPerBuffer) * 8;
+ }
+ 
+ uint32_t
+@@ -63,10 +85,11 @@ AmbreAllocVisibilitySlot(MTLD3D12Device *pDevice) {
+   uint32_t slot = 1 + n % (kAmbreVisibilitySlots - 1);
+   // Diagnostic : toutes les 16 384 requêtes, bilan des 4 096 requêtes faites 32 768 requêtes plus
+   // tôt (la carte graphique en a fini) : part des résultats à zéro (« caché ») et plus grand compte.
+-  if (ambre_visibility_mapped && n >= 36864 && (n & 16383) == 0) {
++  if (n >= 36864 && (n & 16383) == 0) {
+     uint64_t zero = 0, max = 0;
+     for (uint32_t k = 0; k < 4096; k++) {
+-      uint64_t v = ambre_visibility_mapped[1 + (n - 32768 + k) % (kAmbreVisibilitySlots - 1)];
++      auto value = AmbreVisibilityValue(1 + (n - 32768 + k) % (kAmbreVisibilitySlots - 1));
++      uint64_t v = value ? *value : 0;
+       if (!v)
+         zero++;
+       if (v > max)
+@@ -76,8 +99,8 @@ AmbreAllocVisibilitySlot(MTLD3D12Device *pDevice) {
+   }
+   // Remis à zéro au moment de l'enregistrement : l'emplacement a servi il y a un tour complet de
+   // l'anneau, la carte graphique en a fini depuis longtemps.
+-  if (ambre_visibility_mapped)
+-    ambre_visibility_mapped[slot] = 0;
++  if (auto value = AmbreVisibilityValue(slot))
++    *value = 0;
+   return slot;
+ }
+ 
