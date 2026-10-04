@@ -1,0 +1,98 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 2d8d50c..e03303b 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1618,13 +1618,13 @@ public:
+     }
+     // Diagnostic : fichier Allia/Logs/dx12-sans-indirect → commandes indirectes sautées.
+     static const bool skip_indirect = [] {
+-      auto home = env::getEnvVar("HOME");
++      // Dossier personnel du Mac : WINEHOMEDIR (« \\??\\Z:\\Users\\… ») sous Wine.
++      auto home = env::getEnvVar("WINEHOMEDIR");
++      if (home.rfind("\\??\\", 0) == 0)
++        home = home.substr(4);
+       if (home.empty())
+         return false;
+-      std::string path = "Z:" + home + "/Library/Application Support/Allia/Logs/dx12-sans-indirect";
+-      for (auto &c : path)
+-        if (c == '/')
+-          c = '\\';
++      std::string path = home + "\\Library\\Application Support\\Allia\\Logs\\dx12-sans-indirect";
+       bool exists = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+       if (exists)
+         WARN("ambre-dx12: commandes indirectes sautees (diagnostic)");
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 288e9a2..500a29d 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -55,7 +55,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
+ 
+   dxmt::mutex residency_lock_;
+   WMT::Reference<WMT::ResidencySet> residency_set_;
+-  std::map<uint64_t, BufferAllocation *> interval_map_;
++  // Ambre : plusieurs tampons peuvent commencer à la même adresse (tampons placés qui se
++  // recouvrent dans un même tas, réutilisés à tour de rôle par Unreal) : multimap.
++  std::multimap<uint64_t, BufferAllocation *> interval_map_;
+ 
+   InternalCommandLibrary command_library;
+   FormatCapabilityInspector format_inspector_;
+@@ -1342,7 +1344,14 @@ public:
+   HRESULT
+   UnregisterResidencyAndVA(BufferAllocation *allocation) {
+     std::unique_lock<dxmt::mutex> lock(residency_lock_);
+-    interval_map_.erase(allocation->gpuAddress());
++    // Ambre : retirer seulement cette allocation (pas les autres tampons à la même adresse).
++    auto [first, last] = interval_map_.equal_range(allocation->gpuAddress());
++    for (auto it = first; it != last; ++it) {
++      if (it->second == allocation) {
++        interval_map_.erase(it);
++        break;
++      }
++    }
+     if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
+       return S_OK;
+     auto buffer = allocation->buffer();
+@@ -1354,14 +1363,20 @@ public:
+   BufferAllocation *
+   LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset) {
+     std::unique_lock<dxmt::mutex> lock(residency_lock_);
++    // Ambre : le tampon trouvé doit contenir l'adresse (sinon on lisait un autre tampon, situé
++    // avant, à un décalage sans rapport : arguments de dessin et indices faux). Le plus récent
++    // des tampons qui la contiennent est choisi.
+     auto iter = interval_map_.upper_bound(VA);
+-    if (iter == interval_map_.begin()) {
+-      *pOffset = 0;
+-      return {};
++    for (unsigned steps = 0; iter != interval_map_.begin() && steps < 256; steps++) {
++      --iter;
++      auto allocation = iter->second;
++      if (VA >= iter->first && VA < iter->first + allocation->byteLength()) {
++        *pOffset = VA - iter->first;
++        return allocation;
++      }
+     }
+-    --iter;
+-    *pOffset = VA - iter->first;
+-    return iter->second;
++    *pOffset = 0;
++    return {};
+   }
+ 
+   InternalCommandLibrary &
+diff --git a/src/dxmt/dxmt_buffer.hpp b/src/dxmt/dxmt_buffer.hpp
+index ea300f2..45dea05 100644
+--- a/src/dxmt/dxmt_buffer.hpp
++++ b/src/dxmt/dxmt_buffer.hpp
+@@ -111,6 +111,12 @@ public:
+     return gpuAddress_;
+   }
+ 
++  // Ambre : taille de l'allocation (recherche d'un tampon par adresse GPU).
++  uint64_t
++  byteLength() const noexcept {
++    return info_.length;
++  }
++
+   void
+   useSuballocation(uint32_t suballocation) noexcept {
+     current_suballocation_ = suballocation;

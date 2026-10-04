@@ -28,5 +28,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      de UAV (vue R32Uint du compteur) pour les shaders convertis ; pipeline « désactivé » (dessins
      sautés) si un shader ne peut pas être converti, au lieu d'arrêter le jeu
 
+0011 recherche d'un tampon par adresse GPU (LookupBufferByVA) : plusieurs tampons par adresse de
+     départ (tampons placés qui se recouvrent), suppression ciblée, adresse vérifiée dans le tampon
+     trouvé (sinon arguments de dessin et indices lus dans un autre tampon) ; interrupteur de
+     diagnostic dx12-sans-indirect par WINEHOMEDIR
+
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
