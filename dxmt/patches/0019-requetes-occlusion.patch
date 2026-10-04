@@ -1,0 +1,238 @@
+diff --git a/src/d3d12/d3d12_command_encoder.hpp b/src/d3d12/d3d12_command_encoder.hpp
+index 1caf3bc..f2a940b 100644
+--- a/src/d3d12/d3d12_command_encoder.hpp
++++ b/src/d3d12/d3d12_command_encoder.hpp
+@@ -101,6 +101,7 @@ struct RenderEncoderData : EncoderData {
+   uint8_t dsv_readonly_flags;
+   uint8_t render_target_count;
+   bool use_visibility_result = 0;
++  obj_handle_t visibility_buffer = 0; // Ambre : tampon de visibilité (requêtes d'occlusion)
+   bool use_tessellation = 0;
+   bool use_geometry = 0;
+ };
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index aefdd22..e716b42 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -204,6 +204,10 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+   Flags<DirtyState> dirty_state_;
+ 
+   std::array<D3D12_VERTEX_BUFFER_VIEW, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertex_buffers_;
++  // Ambre : requête d'occlusion en cours (mode Metal et emplacement dans le tampon de visibilité).
++  WMTVisibilityResultMode ambre_query_mode_ = WMTVisibilityResultModeDisabled;
++  uint64_t ambre_query_offset_ = 0;
++  bool ambre_query_used_ = false; // dès la 1re requête, toutes les passes ont le tampon de visibilité
+ 
+   uint64_t index_buffer_address;
+   WMT::Buffer index_buffer;
+@@ -247,6 +251,9 @@ public:
+ 
+   void
+   ResetState(ID3D12PipelineState *pInitialPipelineState) {
++    ambre_query_mode_ = WMTVisibilityResultModeDisabled;
++    ambre_query_offset_ = 0;
++    ambre_query_used_ = false;
+     pso_graphics_ = nullptr;
+     pso_compute_ = nullptr;
+     if (auto pso = static_cast<MTLD3D12PipelineState *>(pInitialPipelineState)) {
+@@ -455,6 +462,15 @@ public:
+       dirty_state_.set(DirtyState::Viewport, DirtyState::ScissorRect);
+       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef);
+       dirty_state_.set(DirtyState::GraphicsPipelineState);
++
++      // Ambre : requêtes d'occlusion → la passe a le tampon de visibilité (et compte tout de
++      // suite si une requête est en cours). Le tampon reste sur les passes suivantes pour ne pas
++      // couper une passe à chaque requête.
++      if (ambre_query_used_) {
++        render->visibility_buffer = AmbreVisibilityBuffer(device_);
++        if (ambre_query_mode_ != WMTVisibilityResultModeDisabled)
++          AmbreEncodeVisibilityMode(ambre_query_mode_, ambre_query_offset_);
++      }
+     }
+ 
+     if (!pso_graphics_)
+@@ -1674,20 +1690,78 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+-    DEBUG("BeginQuery");
++    // Ambre : requêtes d'occlusion par le tampon de visibilité de Metal (les autres types ne
++    // sont pas encore faits).
++    if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
++      return;
++    auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
++    if (!heap || Index >= heap->VisibilitySlots.size())
++      return;
++    uint32_t slot = AmbreAllocVisibilitySlot(device_);
++    heap->VisibilitySlots[Index] = slot;
++    ambre_query_used_ = true;
++    ambre_query_offset_ = uint64_t(slot) * 8;
++    ambre_query_mode_ =
++        Type == D3D12_QUERY_TYPE_OCCLUSION ? WMTVisibilityResultModeCounting : WMTVisibilityResultModeBoolean;
++    if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render) {
++      auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
++      if (render->visibility_buffer)
++        AmbreEncodeVisibilityMode(ambre_query_mode_, ambre_query_offset_);
++      else
++        allocator_->InvalidateCurrentPass(); // la passe suivante aura le tampon de visibilité
++    }
+   };
+ 
+   void STDMETHODCALLTYPE
+   EndQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+-    DEBUG("EndQuery");
++    if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
++      return;
++    if (ambre_query_mode_ == WMTVisibilityResultModeDisabled)
++      return;
++    ambre_query_mode_ = WMTVisibilityResultModeDisabled;
++    if (allocator_->encoder_current && allocator_->encoder_current->type == EncoderType::Render &&
++        static_cast<RenderEncoderData *>(allocator_->encoder_current)->visibility_buffer)
++      AmbreEncodeVisibilityMode(WMTVisibilityResultModeDisabled, 0);
+   };
+ 
++  void
++  AmbreEncodeVisibilityMode(WMTVisibilityResultMode mode, uint64_t offset) {
++    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
++    cmd.type = WMTRenderCommandSetVisibilityMode;
++    cmd.mode = mode;
++    cmd.offset = offset;
++  }
++
+   void STDMETHODCALLTYPE
+   ResolveQueryData(
+       ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT QueryCount, ID3D12Resource *pDstBuffer,
+       UINT64 AlignedDstBufferOffset
+   ) {
+-    DEBUG("ResolveQueryData");
++    if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
++      return;
++    auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
++    if (!heap || !pDstBuffer || StartIndex >= heap->VisibilitySlots.size())
++      return;
++    QueryCount = std::min<UINT>(QueryCount, heap->VisibilitySlots.size() - StartIndex);
++    if (!QueryCount || !PreBlit())
++      return;
++    auto src = AmbreVisibilityBuffer(device_);
++    auto dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
++    // Copies regroupées quand les emplacements se suivent (cas courant).
++    for (UINT i = 0; i < QueryCount;) {
++      uint32_t first = heap->VisibilitySlots[StartIndex + i];
++      UINT run = 1;
++      while (first && i + run < QueryCount && heap->VisibilitySlots[StartIndex + i + run] == first + run)
++        run++;
++      auto &cmd_cp = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
++      cmd_cp.type = WMTBlitCommandCopyFromBufferToBuffer;
++      cmd_cp.src = src;
++      cmd_cp.dst = dst;
++      cmd_cp.src_offset = uint64_t(first) * 8;
++      cmd_cp.dst_offset = AlignedDstBufferOffset + uint64_t(i) * 8;
++      cmd_cp.copy_length = uint64_t(run) * 8;
++      i += run;
++    }
+   };
+ 
+   void STDMETHODCALLTYPE SetPredication(ID3D12Resource *pBuffer, UINT64 AlignedBufferOffset, D3D12_PREDICATION_OP Op) {
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index bb847d2..d3e2aad 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -294,6 +294,7 @@ public:
+             render_pass_info.render_target_array_length = data->render_target_array_length;
+             render_pass_info.render_target_width = data->render_target_width;
+             render_pass_info.render_target_height = data->render_target_height;
++            render_pass_info.visibility_buffer = data->visibility_buffer;
+           }
+           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+           encoder.waitForFence(fence_, WMTRenderStageVertex);
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index bf16efe..1eb095c 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -145,8 +145,17 @@ public:
+ 
+ class MTLD3D12QueryHeap : public ID3D12QueryHeap {
+ public:
++  /* Ambre : requêtes d'occlusion. Chaque BeginQuery reçoit un emplacement neuf (8 octets) dans
++     le tampon de visibilité de Metal ; le tas note l'emplacement de chaque requête pour
++     ResolveQueryData (0 = jamais commencée : lue comme « visible »). */
++  D3D12_QUERY_HEAP_TYPE Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
++  std::vector<uint32_t> VisibilitySlots;
+ };
+ 
++/* Ambre : tampon de visibilité commun (anneau d'emplacements de 8 octets, l'emplacement 0 vaut 1). */
++obj_handle_t AmbreVisibilityBuffer(class MTLD3D12Device *pDevice);
++uint32_t AmbreAllocVisibilitySlot(class MTLD3D12Device *pDevice);
++
+ class MTLD3D12PipelineState : public ID3D12PipelineState {
+ public:
+   UINT IsComputePipelineState;
+diff --git a/src/d3d12/d3d12_query_heap.cpp b/src/d3d12/d3d12_query_heap.cpp
+index 904c58f..6eeec41 100644
+--- a/src/d3d12/d3d12_query_heap.cpp
++++ b/src/d3d12/d3d12_query_heap.cpp
+@@ -18,15 +18,64 @@
+ 
+ #include "com/com_pointer.hpp"
+ #include "d3d12_pageable.hpp"
++#include "thread.hpp"
++#include <atomic>
++#include <cstring>
+ 
+ namespace dxmt {
+ 
++namespace {
++constexpr uint32_t kAmbreVisibilitySlots = 1u << 20; // 8 Mo : des centaines d'images d'avance
++dxmt::mutex ambre_visibility_lock;
++Rc<Buffer> ambre_visibility;
++uint64_t *ambre_visibility_mapped = nullptr;
++obj_handle_t ambre_visibility_handle = 0;
++std::atomic<uint32_t> ambre_visibility_next = 0;
++
++void
++AmbreEnsureVisibility(MTLD3D12Device *pDevice) {
++  std::unique_lock<dxmt::mutex> guard(ambre_visibility_lock);
++  if (ambre_visibility_handle)
++    return;
++  ambre_visibility = new Buffer(uint64_t(kAmbreVisibilitySlots) * 8, pDevice->GetMTLDevice());
++  Flags<BufferAllocationFlag> flags;
++  ambre_visibility->rename(ambre_visibility->allocate(flags));
++  ambre_visibility_mapped = (uint64_t *)ambre_visibility->current()->mappedMemory(0);
++  if (ambre_visibility_mapped) {
++    memset(ambre_visibility_mapped, 0, uint64_t(kAmbreVisibilitySlots) * 8);
++    ambre_visibility_mapped[0] = 1; // requête jamais commencée : « visible »
++  }
++  pDevice->RegisterResidencyAndVA(ambre_visibility->current());
++  ambre_visibility_handle = ambre_visibility->current()->buffer().handle;
++}
++} // namespace
++
++obj_handle_t
++AmbreVisibilityBuffer(MTLD3D12Device *pDevice) {
++  AmbreEnsureVisibility(pDevice);
++  return ambre_visibility_handle;
++}
++
++uint32_t
++AmbreAllocVisibilitySlot(MTLD3D12Device *pDevice) {
++  AmbreEnsureVisibility(pDevice);
++  uint32_t slot = 1 + ambre_visibility_next.fetch_add(1) % (kAmbreVisibilitySlots - 1);
++  // Remis à zéro au moment de l'enregistrement : l'emplacement a servi il y a un tour complet de
++  // l'anneau, la carte graphique en a fini depuis longtemps.
++  if (ambre_visibility_mapped)
++    ambre_visibility_mapped[slot] = 0;
++  return slot;
++}
++
+ class MTLD3D12QueryHeapImpl : public MTLD3D12Pageable<MTLD3D12QueryHeap> {
+ public:
+   MTLD3D12QueryHeapImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12QueryHeap>(pDevice) {}
+ 
+   HRESULT
+   Initialize(const D3D12_QUERY_HEAP_DESC *pDesc) {
++    Type = pDesc->Type;
++    if (Type == D3D12_QUERY_HEAP_TYPE_OCCLUSION)
++      VisibilitySlots.assign(pDesc->Count, 0);
+     return S_OK;
+   }
+ 

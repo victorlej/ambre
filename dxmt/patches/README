@@ -63,6 +63,11 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      métadonnées ; chaque vue qui ne commence pas au début du tampon a donc sa propre vue texture,
      alignée sur 16 octets (exigence de Metal sur puce Apple). Avant : jusqu'à 255 éléments lus
      trop tôt (tissus de Clair Obscur : cape et cheveux en éclats, sommets projetés au loin).
+0019 requêtes d'occlusion Direct3D 12 (BeginQuery/EndQuery/ResolveQueryData n'étaient pas faites :
+     Unreal lisait des résultats au hasard, objets qui apparaissent et disparaissent) : tampon de
+     visibilité Metal commun (anneau de 8 Mo, un emplacement neuf remis à zéro par requête,
+     emplacement 0 = « visible » pour une requête jamais commencée), comptage ou booléen selon le
+     type, résultats recopiés dans le tampon de destination. Horodatages et statistiques : pas encore.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
