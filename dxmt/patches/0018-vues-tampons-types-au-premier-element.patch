@@ -1,0 +1,45 @@
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 25f0c83..81c4ec3 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -265,12 +265,13 @@ public:
+         entry.gpu_va = AmbreZeroBufferAddress(device_);
+         break;
+       }
+-      // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
+-      // décaler la vue que de 255 éléments : au-delà, vue propre qui commence au bon endroit.
++      // La vue texture de DXMT couvre le tampon depuis son début et le convertisseur n'applique
++      // pas le décalage des métadonnées aux tampons typés : vue propre qui commence au premier
++      // élément dès que la vue ne commence pas au début du tampon.
+       // IRDescriptorTableSetBufferView applies bufferOffset to the GPU address,
+       // independently of the offset encoded for the texture-buffer view.
+       entry.gpu_va = texel.buffer->current()->gpuAddress() + texel.slice.byteOffset;
+-      if (texel.slice.firstElement > 0xff) {
++      if (texel.slice.firstElement > 0) {
+         uint32_t remaining = 0;
+         entry.texture_view_id = texel.buffer->offsetViewResourceID(texel.view, texel.slice.firstElement, &remaining);
+         entry.metadata = IRBufferMetadata(texel.slice.byteLength, remaining, true);
+diff --git a/src/dxmt/dxmt_buffer.cpp b/src/dxmt/dxmt_buffer.cpp
+index e77add4..1f3b207 100644
+--- a/src/dxmt/dxmt_buffer.cpp
++++ b/src/dxmt/dxmt_buffer.cpp
+@@ -165,11 +165,14 @@ Buffer::offsetViewResourceID(BufferViewKey key, uint32_t first_element, uint32_t
+   uint64_t texel_size = MTLGetTexelSize(format);
+   if (!texel_size)
+     return 0;
+-  // Début de vue sur un multiple de 256 éléments (donc de 256 octets, exigence de Metal) ; le
+-  // reste (< 256 éléments) passe par le décalage du convertisseur.
+-  uint64_t offset = (uint64_t)(first_element & ~255u) * texel_size;
+-  *remaining_elements = first_element & 255u;
+-  uint64_t cache_key = ((uint64_t)key.index << 32) | (first_element >> 8);
++  // Les shaders convertis lisent un tampon typé par sa vue texture seule : le décalage en
++  // éléments des métadonnées n'est pas appliqué (vérifié dans le code produit par le Metal
++  // Shader Converter 3.0.6). La vue commence donc au premier élément, à 16 octets près
++  // (alignement minimal des vues texture de tampon sur puce Apple).
++  uint64_t first_byte = (uint64_t)first_element * texel_size;
++  uint64_t offset = first_byte & ~(uint64_t)15;
++  *remaining_elements = (uint32_t)((first_byte - offset) / texel_size);
++  uint64_t cache_key = ((uint64_t)key.index << 44) | (offset >> 4);
+   auto found = allocation->ambre_offset_views_.find(cache_key);
+   if (found != allocation->ambre_offset_views_.end())
+     return found->second->gpu_resource_id;

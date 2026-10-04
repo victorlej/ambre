@@ -37,7 +37,8 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0012 garde-fou des commandes indirectes des pipelines DXIL : arguments recopiés par la carte
      graphique avant usage (programme de sommets sans rastérisation dans la passe de rendu, petit
      calcul avant les calculs indirects), arguments absurdes mis à zéro (> 16 M d'indices, > 1 M
-     d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes0013 descripteurs nuls (tables, tampons de constantes, descripteurs racine à 0) des shaders DXIL
+     d'instances, > 4 M de groupes) : plus de gel de plusieurs secondes
+0013 descripteurs nuls (tables, tampons de constantes, descripteurs racine à 0) des shaders DXIL
      convertis : tampon de 64 Ko de zéros au lieu de l'adresse 0, comme Direct3D 12 (lectures
      nulles au lieu de valeurs absurdes)
 0014 arguments racine des shaders DXIL convertis dans la disposition exacte du convertisseur
@@ -57,6 +58,11 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0017 vues de tampons typés : l'adresse GPU inclut le décalage en octets de la vue, comme
      IRDescriptorTableSetBufferView ; le décalage de la vue texture reste indépendant.
      Test : python3 tests/check-dx12-buffer-view.py /chemin/vers/dxmt-avec-correctifs
+0018 vues de tampons typés au premier élément : le code produit par le Metal Shader Converter
+     (3.0.6) lit un Buffer<T> par sa vue texture seule, sans le décalage en éléments des
+     métadonnées ; chaque vue qui ne commence pas au début du tampon a donc sa propre vue texture,
+     alignée sur 16 octets (exigence de Metal sur puce Apple). Avant : jusqu'à 255 éléments lus
+     trop tôt (tissus de Clair Obscur : cape et cheveux en éclats, sommets projetés au loin).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
