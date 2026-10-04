@@ -76,6 +76,11 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      jeu, structures qui disparaissent). Passes DirectX 12 avec requêtes en mode « additionner »
      (MTLVisibilityResultTypeAccumulate, macOS 26 et plus ; champ visibility_result_type de
      WMTRenderPassInfo, appelé par le runtime).
+0022 diagnostic des dessins faits pendant une requête d'occlusion (journal « ambre-occlusion: ») :
+     1 dessin sur 4 096 avec la passe (cibles, profondeur), le pipeline (pixel shader, test et
+     fonction de profondeur, faces), les tampons de sommets introuvables, la vue et les ciseaux ;
+     dessins sautés pendant une requête ; mode « additionner » de Metal disponible ou non.
+     0021 seul n'a rien changé (résultats toujours à zéro). À retirer ensuite.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
