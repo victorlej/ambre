@@ -54,6 +54,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      Les arguments indirects gardent leur propre convention Apple. Test de contrat :
      python3 tests/check-dx12-indexed-draw.py /chemin/vers/dxmt-avec-correctifs
      (macOS avec les en-têtes du Metal Shader Converter installés dans /usr/local/include).
+0017 vues de tampons typés : l'adresse GPU inclut le décalage en octets de la vue, comme
+     IRDescriptorTableSetBufferView ; le décalage de la vue texture reste indépendant.
+     Test : python3 tests/check-dx12-buffer-view.py /chemin/vers/dxmt-avec-correctifs
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

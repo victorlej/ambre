@@ -79,8 +79,8 @@ int main() {
     for (unsigned i = 0; i < 3000; ++i) {
       AmbreDraw ambre;
       ambre.index_type = i % 2 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-      ambre.index_offset = i == 0 ? 14134772 : uint64_t(rng()) * 4;
-      const UINT start = i == 0 ? 0 : rng();
+      ambre.index_offset = i == 0 ? 14119424 : uint64_t(rng()) * 4;
+      const UINT start = i == 0 ? 7674 : rng();
       const UINT count = i == 0 ? 1242 : rng(), instances = rng(), instance = rng();
       const INT vertex = int32_t(rng());
       const uint64_t offset = ambre.index_offset + uint64_t(start) * (i % 2 ? 4 : 2);

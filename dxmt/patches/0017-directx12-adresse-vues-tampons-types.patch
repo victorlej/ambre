@@ -1,0 +1,14 @@
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -267,7 +267,9 @@ public:
+       }
+       // La vue texture de DXMT couvre le tampon depuis son début ; le convertisseur ne sait
+       // décaler la vue que de 255 éléments : au-delà, vue propre qui commence au bon endroit.
+-      entry.gpu_va = texel.buffer->current()->gpuAddress();
++      // IRDescriptorTableSetBufferView applies bufferOffset to the GPU address,
++      // independently of the offset encoded for the texture-buffer view.
++      entry.gpu_va = texel.buffer->current()->gpuAddress() + texel.slice.byteOffset;
+       if (texel.slice.firstElement > 0xff) {
+         uint32_t remaining = 0;
+         entry.texture_view_id = texel.buffer->offsetViewResourceID(texel.view, texel.slice.firstElement, &remaining);
