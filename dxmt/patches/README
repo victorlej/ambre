@@ -112,6 +112,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      arguments racine aussi aux étapes object/mesh, dessin par drawMeshThreadgroups (paramètres à
      l'index 4, IRRuntimeDrawInfo à l'index 5). ExecuteIndirect avec un GS émulé : sauté. Sans module
      qui fournit ambre_dxil_convert2, le pipeline échoue comme avant (dessins sautés).
+0029 diagnostic de l'allocateur transitoire d'Unreal (écran noir quand il est actif) : journal
+     « ambre-heap: » des 40 premières ressources placées dans un tas et de toute ressource placée
+     sans objet Metal. À retirer ensuite.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

@@ -1,0 +1,28 @@
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 500a29d..9a4f8c9 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -733,6 +733,23 @@ public:
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
+     HRESULT hr = CreatePlacedResourceImpl(pHeap, Offset, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
++    // Ambre (diagnostic 0029) : ressources placées dans un tas (allocateur transitoire d'Unreal) :
++    // les 40 premières, et toute ressource dont Metal n'a pas créé l'objet.
++    if (SUCCEEDED(hr) && pDesc && ppResource && *ppResource) {
++      static std::atomic<uint32_t> placed = 0, missing = 0;
++      auto resource = static_cast<MTLD3D12Resource *>((ID3D12Resource *)*ppResource);
++      bool empty = pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
++                       ? !(resource->buffer && resource->buffer->current() && resource->buffer->current()->buffer().handle)
++                       : !(resource->texture && resource->texture->current() && resource->texture->current()->texture().handle);
++      D3D12_HEAP_DESC heap_desc;
++      static_cast<ID3D12Heap *>(pHeap)->GetDesc(&heap_desc);
++      auto n = placed++;
++      if (empty ? missing++ < 40 : n < 40)
++        WARN("ambre-heap: ressource placee ", n, empty ? " SANS OBJET METAL" : "", " : dimension ", pDesc->Dimension,
++             ", format ", pDesc->Format, ", ", pDesc->Width, "x", pDesc->Height, "x", pDesc->DepthOrArraySize,
++             ", mips ", pDesc->MipLevels, ", flags ", (uint32_t)pDesc->Flags, ", decalage ", Offset, " dans un tas de ",
++             heap_desc.SizeInBytes, " (type ", heap_desc.Properties.Type, ", flags ", (uint32_t)heap_desc.Flags, ")");
++    }
+     if (FAILED(hr))
+       AmbreLogResourceFailure("CreatePlacedResource", hr, pDesc);
+     return hr;
