@@ -118,6 +118,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0030 suite du diagnostic : seules les textures placées de dessin / profondeur / calcul sont notées
      (les 40 premières de 0029 étaient des textures ordinaires, toutes créées par Metal), et les
      DiscardResource (ignorés par Ambre) et barrières d'alias sont comptés. À retirer ensuite.
+0031 retire les diagnostics 0026, 0029 et 0030 (lignes « ambre-perf: » et « ambre-heap: ») ; garde le
+     recouvrement des passes de 0027. Allocateur transitoire d'Unreal : interblocage au démarrage, pas
+     encore résolu (Allia pose r.RDG.TransientAllocator=0 pour Clair Obscur).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

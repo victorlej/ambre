@@ -1,0 +1,252 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 18e297b..b87c262 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -666,7 +666,6 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation) {
+-    ambre_perf.draws.fetch_add(1, std::memory_order_relaxed); // diagnostic 0026
+     WMTPrimitiveType primitive_type;
+     uint32_t cp_count;
+     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
+@@ -697,7 +696,6 @@ public:
+       UINT IndexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, INT BaseVertexLocation,
+       UINT StartInstanceLocation
+   ) {
+-    ambre_perf.draws.fetch_add(1, std::memory_order_relaxed); // diagnostic 0026
+     WMTPrimitiveType primitive_type;
+     uint32_t cp_count;
+     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
+@@ -976,7 +974,6 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   Dispatch(UINT X, UINT Y, UINT Z) {
+-    ambre_perf.dispatches.fetch_add(1, std::memory_order_relaxed); // diagnostic 0026
+     if (!PreDispatch())
+       return;
+ 
+@@ -1403,14 +1400,6 @@ public:
+                                 D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ |
+                                 D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_COPY_SOURCE |
+                                 D3D12_RESOURCE_STATE_RESOLVE_DEST | D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+-    for (UINT i = 0; i < Count && barriers; i++) {
+-      if (barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING) { // Ambre (diagnostic 0030)
+-        static std::atomic<uint32_t> aliasing = 0;
+-        auto n = aliasing++;
+-        if (n < 5 || (n & 4095) == 0)
+-          WARN("ambre-heap: barriere d'alias n", n);
+-      }
+-    }
+     for (UINT i = 0; i < Count && barriers; i++) {
+       auto &b = barriers[i];
+       if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.StateAfter ||
+@@ -1828,10 +1817,6 @@ public:
+ 
+   void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) {
+     // do nothing for now
+-    static std::atomic<uint32_t> discards = 0; // Ambre (diagnostic 0030)
+-    auto n = discards++;
+-    if (n < 5 || (n & 4095) == 0)
+-      WARN("ambre-heap: DiscardResource n", n, " (ignore)");
+   };
+ 
+   void STDMETHODCALLTYPE
+@@ -1930,8 +1915,6 @@ public:
+   ExecuteIndirectConverted(
+       MTLD3D12CommandSignature *sig, UINT MaxCommandCount, uint64_t ArgBufferAddress, uint64_t CountBufferAddress
+   ) {
+-    ambre_perf.indirect.fetch_add(1, std::memory_order_relaxed); // diagnostic 0026
+-    ambre_perf.indirect_commands.fetch_add(MaxCommandCount, std::memory_order_relaxed);
+     static std::atomic<uint32_t> warned = 0;
+     if (!sig->SimpleArgument || (CountBufferAddress && MaxCommandCount > 1)) {
+       if (warned++ < 10)
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 3a81007..b3c72dc 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -24,14 +24,11 @@
+ #include "log/log.hpp"
+ #include "util_env.hpp"
+ #include <atomic>
+-#include <chrono>
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
+ 
+ namespace dxmt {
+ 
+-AmbrePerfCounters ambre_perf{}; // diagnostic 0026
+-
+ 
+ constexpr auto kCommandQueueSize = 32u;
+ 
+@@ -201,48 +198,10 @@ public:
+     IMPLEMENT_ME
+   };
+ 
+-  // Ambre (diagnostic 0026) : toutes les 5 s, travail moyen par image.
+-  uint64_t ambre_cmdbufs_ = 0, ambre_clears_ = 0, ambre_passes_ = 0, ambre_clear_then_pass_ = 0;
+-  uint64_t ambre_blits_ = 0, ambre_computes_ = 0, ambre_resolves_ = 0, ambre_overlapped_ = 0;
+-  std::chrono::steady_clock::time_point ambre_perf_since_ = std::chrono::steady_clock::now();
+-  uint64_t ambre_perf_frames0_ = 0, ambre_perf_draws0_ = 0, ambre_perf_dispatches0_ = 0, ambre_perf_indirect0_ = 0, ambre_perf_icmd0_ = 0;
+-
+-  void
+-  AmbrePerfReport() {
+-    auto now = std::chrono::steady_clock::now();
+-    if (now - ambre_perf_since_ < std::chrono::seconds(5))
+-      return;
+-    double seconds = std::chrono::duration<double>(now - ambre_perf_since_).count();
+-    uint64_t frames = ambre_perf.frames.load() - ambre_perf_frames0_;
+-    uint64_t draws = ambre_perf.draws.load() - ambre_perf_draws0_;
+-    uint64_t dispatches = ambre_perf.dispatches.load() - ambre_perf_dispatches0_;
+-    uint64_t indirect = ambre_perf.indirect.load() - ambre_perf_indirect0_;
+-    uint64_t icmd = ambre_perf.indirect_commands.load() - ambre_perf_icmd0_;
+-    if (frames) {
+-      auto f = [&](uint64_t v) { return (uint64_t)(v / (double)frames + 0.5); };
+-      WARN("ambre-perf: ", (uint64_t)(frames / seconds + 0.5), " images/s | par image : ", f(ambre_cmdbufs_),
+-           " command buffers, ", f(ambre_passes_), " passes de rendu (", f(ambre_clear_then_pass_),
+-           " juste apres un effacement de leur cible, ", f(ambre_overlapped_), " en recouvrement), ", f(ambre_clears_), " effacements, ", f(ambre_computes_),
+-           " encodeurs de calcul, ", f(ambre_blits_), " copies, ", f(ambre_resolves_), " resolutions | ", f(draws),
+-           " dessins, ", f(dispatches), " calculs, ", f(indirect), " indirects (", f(icmd), " commandes au maximum, tampon de compte ignore)");
+-    }
+-    ambre_perf_since_ = now;
+-    ambre_perf_frames0_ += frames;
+-    ambre_perf_draws0_ += draws;
+-    ambre_perf_dispatches0_ += dispatches;
+-    ambre_perf_indirect0_ += indirect;
+-    ambre_perf_icmd0_ += icmd;
+-    ambre_cmdbufs_ = ambre_clears_ = ambre_passes_ = ambre_clear_then_pass_ = 0;
+-    ambre_blits_ = ambre_computes_ = ambre_resolves_ = ambre_overlapped_ = 0;
+-  }
+-
+   void STDMETHODCALLTYPE
+   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+     auto scope = StartCommitting();
+     auto &cmdbuf = scope.inflight.cmdbuf;
+-    AmbrePerfReport();
+-    ambre_cmdbufs_++;
+-    obj_handle_t ambre_last_clear = 0; // diagnostic 0026 : effacement suivi d'une passe sur la même cible
+     for (unsigned i = 0; i < Count; i++) {
+       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+       EncoderData *current = pCommandList->entry;
+@@ -255,8 +214,6 @@ public:
+           break;
+         case EncoderType::Clear: {
+           auto data = static_cast<ClearEncoderData *>(current);
+-          ambre_clears_++;
+-          ambre_last_clear = data->attachment.texture().handle;
+           {
+             WMTRenderPassInfo info;
+             WMT::InitializeRenderPassInfo(info);
+@@ -295,15 +252,6 @@ public:
+         }
+         case EncoderType::Render: {
+           auto data = static_cast<RenderEncoderData *>(current);
+-          ambre_passes_++;
+-          if (ambre_last_clear) {
+-            bool same = data->depth.attachment && data->depth.attachment.texture().handle == ambre_last_clear;
+-            for (auto &color : data->colors)
+-              same = same || (color.attachment && color.attachment.texture().handle == ambre_last_clear);
+-            if (same)
+-              ambre_clear_then_pass_++;
+-          }
+-          ambre_last_clear = 0;
+           WMTRenderPassInfo render_pass_info;
+           WMT::InitializeRenderPassInfo(render_pass_info);
+           {
+@@ -359,8 +307,6 @@ public:
+           // les sommets, attente au stade des fragments seulement (recouvrement sommets/fragments).
+           bool ambre_overlap = !data->ambre_vertex_wait &&
+                                (ambre_previous == EncoderType::Render || ambre_previous == EncoderType::Clear);
+-          if (ambre_overlap)
+-            ambre_overlapped_++;
+           encoder.waitForFence(fence_, ambre_overlap ? WMTRenderStageFragment : WMTRenderStageVertex);
+           encoder.encodeCommands(&data->cmd_head);
+           encoder.updateFence(fence_, WMTRenderStageFragment);
+@@ -368,8 +314,6 @@ public:
+           break;
+         }
+         case EncoderType::Blit: {
+-          ambre_blits_++;
+-          ambre_last_clear = 0;
+           auto data = static_cast<BlitEncoderData *>(current);
+           auto encoder = cmdbuf.blitCommandEncoder();
+           encoder.waitForFence(fence_);
+@@ -379,8 +323,6 @@ public:
+           break;
+         }
+         case EncoderType::Compute: {
+-          ambre_computes_++;
+-          ambre_last_clear = 0;
+           auto data = static_cast<ComputeEncoderData *>(current);
+           auto encoder = cmdbuf.computeCommandEncoder(false);
+           encoder.waitForFence(fence_);
+@@ -390,8 +332,6 @@ public:
+           break;
+         }
+         case EncoderType::Resolve: {
+-          ambre_resolves_++;
+-          ambre_last_clear = 0;
+           auto data = static_cast<ResolveEncoderData *>(current);
+ 
+           WMTRenderPassInfo info;
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index e524ee1..500a29d 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -733,26 +733,6 @@ public:
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
+     HRESULT hr = CreatePlacedResourceImpl(pHeap, Offset, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
+-    // Ambre (diagnostic 0029) : ressources placées dans un tas (allocateur transitoire d'Unreal) :
+-    // les 40 premières, et toute ressource dont Metal n'a pas créé l'objet.
+-    if (SUCCEEDED(hr) && pDesc && ppResource && *ppResource) {
+-      static std::atomic<uint32_t> placed = 0, missing = 0;
+-      auto resource = static_cast<MTLD3D12Resource *>((ID3D12Resource *)*ppResource);
+-      bool empty = pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+-                       ? !(resource->buffer && resource->buffer->current() && resource->buffer->current()->buffer().handle)
+-                       : !(resource->texture && resource->texture->current() && resource->texture->current()->texture().handle);
+-      D3D12_HEAP_DESC heap_desc;
+-      static_cast<ID3D12Heap *>(pHeap)->GetDesc(&heap_desc);
+-      auto n = placed++;
+-      // 0030 : seulement les images de dessin, de profondeur ou de calcul (allocateur transitoire).
+-      bool transient = pDesc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER && (pDesc->Flags & 0x7);
+-      static std::atomic<uint32_t> transient_count = 0;
+-      if (empty ? missing++ < 40 : (transient && transient_count++ < 60))
+-        WARN("ambre-heap: ressource placee ", n, empty ? " SANS OBJET METAL" : "", " : dimension ", pDesc->Dimension,
+-             ", format ", pDesc->Format, ", ", pDesc->Width, "x", pDesc->Height, "x", pDesc->DepthOrArraySize,
+-             ", mips ", pDesc->MipLevels, ", flags ", (uint32_t)pDesc->Flags, ", decalage ", Offset, " dans un tas de ",
+-             heap_desc.SizeInBytes, " (type ", heap_desc.Properties.Type, ", flags ", (uint32_t)heap_desc.Flags, ")");
+-    }
+     if (FAILED(hr))
+       AmbreLogResourceFailure("CreatePlacedResource", hr, pDesc);
+     return hr;
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index f6a9254..57fd4ca 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -159,12 +159,6 @@ obj_handle_t AmbreVisibilityBuffer(class MTLD3D12Device *pDevice, uint32_t slot)
+ uint64_t AmbreVisibilityOffset(uint32_t slot);
+ uint32_t AmbreAllocVisibilitySlot(class MTLD3D12Device *pDevice);
+ 
+-/* Ambre (diagnostic 0026) : compteurs de travail par image (journal « ambre-perf: »). */
+-struct AmbrePerfCounters {
+-  std::atomic<uint64_t> frames, draws, dispatches, indirect, indirect_commands;
+-};
+-extern AmbrePerfCounters ambre_perf;
+-
+ class MTLD3D12PipelineState : public ID3D12PipelineState {
+ public:
+   UINT IsComputePipelineState;
+diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
+index 87050de..4516090 100644
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -704,7 +704,6 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+-    ambre_perf.frames.fetch_add(1, std::memory_order_relaxed); // diagnostic 0026
+     HRESULT hr = S_OK;
+     if (desc_.Width == 0 || desc_.Height == 0)
+       hr = DXGI_STATUS_OCCLUDED;
