@@ -103,6 +103,15 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      fragments et non plus des sommets : ses sommets avancent pendant les fragments de la
      précédente (recouvrement des puces Apple). La chaîne de fences reste complète. Mesuré par 0026
      (Clair Obscur, 4 oct. : ~95 passes, ~62 encodeurs de calcul, ~1 500 dessins par image).
+0028 émulation des geometry shaders DirectX 12 (pipeline mesh, comme le runtime du Metal Shader
+     Converter d'Apple) : prise générique ambre_dxil_convert2 du module de conversion (sommets en
+     « object shader » + fonction de lecture des sommets, geometry shader en « mesh shader ») ;
+     winemetal : IRConverter_newLibrary2, MTLDevice_newGeometryEmulationPipeline (constantes
+     tessellationEnabled / vertex_shader_output_size_fc, lecture des sommets liée) ; d3d12 : pipeline
+     émulé si GS sans tessellation ni stream output, table IRRuntimeVertexBuffer[31] à l'index 6,
+     arguments racine aussi aux étapes object/mesh, dessin par drawMeshThreadgroups (paramètres à
+     l'index 4, IRRuntimeDrawInfo à l'index 5). ExecuteIndirect avec un GS émulé : sauté. Sans module
+     qui fournit ambre_dxil_convert2, le pipeline échoue comme avant (dessins sautés).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

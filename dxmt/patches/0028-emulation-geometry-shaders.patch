@@ -1,0 +1,695 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index f6d74c5..d45da2f 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -506,6 +506,25 @@ public:
+     }
+     if (pso_graphics_->IsConvertedPipelineState) {
+       // Ambre : pipeline DXIL converti (Metal Shader Converter).
++      if (dirty_state_.test(DirtyState::VertexBuffer) && pso_graphics_->IsGeometryEmulated) {
++        // Ambre (0028) : geometry shader émulé : la lecture des sommets (object shader) prend une
++        // table IRRuntimeVertexBuffer[31] (adresse, taille, pas) à l'index 6.
++        struct AmbreVertexBuffer {
++          uint64_t addr;
++          uint32_t length, stride;
++        };
++        auto [Ptr, Offset] = allocator_->AllocateGPUHeap(sizeof(AmbreVertexBuffer) * 31, 16);
++        auto table = reinterpret_cast<AmbreVertexBuffer *>(Ptr);
++        memset(table, 0, sizeof(AmbreVertexBuffer) * 31);
++        for (unsigned slot = 0; slot < 31; slot++) {
++          if (!(pso_graphics_->slot_mask & (1u << slot)))
++            continue;
++          auto &view = vertex_buffers_[slot];
++          table[slot] = {view.BufferLocation, view.SizeInBytes, view.StrideInBytes};
++        }
++        EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, allocator_->gpu_heap_buffer_.handle, Offset, 6);
++        dirty_state_.clr(DirtyState::VertexBuffer);
++      }
+       if (dirty_state_.test(DirtyState::VertexBuffer)) {
+         auto slot_mask = pso_graphics_->slot_mask;
+         for (unsigned slot = 0; slot < 32 && slot_mask; slot++) {
+@@ -532,6 +551,10 @@ public:
+             [&](obj_handle_t buffer, uint64_t offset, uint8_t index) {
+               EncodeConvertedRenderBuffer(WMTRenderCommandSetVertexBuffer, buffer, offset, index);
+               EncodeConvertedRenderBuffer(WMTRenderCommandSetFragmentBuffer, buffer, offset, index);
++              if (pso_graphics_->IsGeometryEmulated) {
++                EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, buffer, offset, index);
++                EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, buffer, offset, index);
++              }
+             }
+         );
+         dirty_state_.clr(DirtyState::GraphicsRootArguments);
+@@ -652,6 +675,10 @@ public:
+     if (status == DrawCallStatus::Invalid)
+       return;
+ 
++    if (pso_graphics_->IsGeometryEmulated) {
++      AmbreDrawGeometryEmulated(false, VertexCountPerInstance, InstanceCount, StartVertexLocation, 0, StartInstanceLocation);
++      return;
++    }
+     if (pso_graphics_->IsConvertedPipelineState) {
+       uint32_t params[4] = {VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
+       EncodeConvertedDrawParams(params, sizeof(params), 0, primitive_type);
+@@ -678,6 +705,12 @@ public:
+     DrawCallStatus status = PreDraw();
+     if (status == DrawCallStatus::Invalid)
+       return;
++    if (pso_graphics_->IsGeometryEmulated) {
++      AmbreDrawGeometryEmulated(
++          true, IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation, StartInstanceLocation
++      );
++      return;
++    }
+     const uint64_t index_buffer_offset =
+         index_offset + uint64_t(StartVertexLocation) * (index_type == WMTIndexTypeUInt32 ? 4 : 2);
+     if (pso_graphics_->IsConvertedPipelineState) {
+@@ -700,6 +733,87 @@ public:
+     cmd_draw.base_instance = StartInstanceLocation;
+   };
+ 
++  // Ambre (0028) : dessin avec un geometry shader émulé (calculs de
++  // IRRuntimeDraw[Indexed]PrimitivesGeometryEmulation du runtime d'Apple) : paramètres de dessin
++  // (index 4) et IRRuntimeDrawInfo (index 5) aux étapes object et mesh, puis groupes mesh.
++  void
++  AmbreDrawGeometryEmulated(bool Indexed, UINT Count, UINT Instances, UINT Start, INT BaseVertex, UINT StartInstance) {
++    uint32_t primitive, vertices, overlap;
++    switch (topology_) {
++    case D3D_PRIMITIVE_TOPOLOGY_POINTLIST: primitive = 0; vertices = 1; overlap = 0; break;
++    case D3D_PRIMITIVE_TOPOLOGY_LINELIST: primitive = 1; vertices = 2; overlap = 0; break;
++    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP: primitive = 2; vertices = 2; overlap = 1; break;
++    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: primitive = 3; vertices = 3; overlap = 0; break;
++    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP: primitive = 4; vertices = 3; overlap = 2; break;
++    case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ: primitive = 5; vertices = 4; overlap = 0; break;
++    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ: primitive = 6; vertices = 6; overlap = 0; break;
++    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ: primitive = 7; vertices = 4; overlap = 3; break;
++    default: return;
++    }
++    if (!Count || !Instances)
++      return;
++    uint32_t vertex_size = std::max(1u, pso_graphics_->gs_vertex_size);
++    uint32_t max_prims_per_mesh = pso_graphics_->gs_max_input_primitives;
++    // Charge utile de 16 Ko (32 octets de métadonnées), au plus 1 024 groupes mesh par groupe object
++    // et 256 fils par groupe.
++    uint32_t max_vertices_payload = ((16384u - 32u) / vertex_size) / vertices * vertices;
++    uint32_t prims_per_object = std::min(max_vertices_payload / vertices, 1024u * max_prims_per_mesh);
++    prims_per_object = std::max(1u, std::min(prims_per_object, 256u / vertices));
++    uint32_t object_stride = prims_per_object * vertices;
++
++    struct AmbreDrawInfo {
++      uint16_t index_type;
++      uint8_t primitive_topology;
++      uint8_t threads_per_patch;
++      uint16_t max_input_primitives_per_mesh_threadgroup;
++      uint16_t object_threadgroup_vertex_stride;
++      uint16_t mesh_threadgroup_primitive_stride;
++      uint16_t gs_instance_count;
++      uint16_t patches_per_object_threadgroup;
++      uint16_t input_control_points_per_patch;
++      uint64_t index_buffer;
++    };
++    static_assert(sizeof(AmbreDrawInfo) == 24, "IRRuntimeDrawInfo");
++    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(64, 16);
++    memset(Ptr, 0, 64);
++    auto params = reinterpret_cast<uint32_t *>(Ptr);
++    if (Indexed) {
++      params[0] = Count;
++      params[1] = Instances;
++      params[2] = Start; // en indices : l'adresse du tampon d'index porte déjà son décalage
++      params[3] = (uint32_t)BaseVertex;
++      params[4] = StartInstance;
++    } else {
++      params[0] = Count;
++      params[1] = Instances;
++      params[2] = Start;
++      params[3] = StartInstance;
++    }
++    auto info = reinterpret_cast<AmbreDrawInfo *>(reinterpret_cast<uint8_t *>(Ptr) + 32);
++    info->index_type = Indexed ? (index_type == WMTIndexTypeUInt32 ? 2 : 1) : 0;
++    info->primitive_topology = (uint8_t)primitive;
++    info->threads_per_patch = (uint8_t)vertices;
++    info->max_input_primitives_per_mesh_threadgroup = (uint16_t)max_prims_per_mesh;
++    info->object_threadgroup_vertex_stride = (uint16_t)object_stride;
++    info->mesh_threadgroup_primitive_stride = (uint16_t)max_prims_per_mesh;
++    info->gs_instance_count = (uint16_t)Instances;
++    info->patches_per_object_threadgroup = (uint16_t)prims_per_object;
++    info->input_control_points_per_patch = (uint16_t)vertices;
++    info->index_buffer = Indexed ? index_buffer_address : 0;
++    auto heap = allocator_->gpu_heap_buffer_.handle;
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, heap, Offset, 4);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, heap, Offset, 4);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, heap, Offset + 32, 5);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, heap, Offset + 32, 5);
++
++    uint32_t provoking = Count > overlap ? Count - overlap : 0;
++    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups>();
++    cmd.type = WMTRenderCommandDrawMeshThreadgroups;
++    cmd.threadgroup_per_grid = {(provoking + object_stride - 1) / object_stride, Instances, 1};
++    cmd.object_threadgroup_size = {object_stride + overlap, 1, 1};
++    cmd.mesh_threadgroup_size = {max_prims_per_mesh, 1, 1};
++  }
++
+   // Ambre : arguments racine au format du Metal Shader Converter. Même disposition que DXMT
+   // (un mot de 64 bits par table ou descripteur racine, constantes par paires) ; seules les
+   // adresses de tables changent : tas de DXMT (32 octets) → tas miroir (24 octets).
+@@ -1276,6 +1390,8 @@ public:
+     pso_graphics_ = graphics_pso;
+     pso_compute_ = nullptr;
+     dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::ComputePipelineState, DirtyState::VertexBuffer);
++    if (graphics_pso->IsGeometryEmulated) // Ambre (0028) : aussi aux étapes object et mesh
++      dirty_state_.set(DirtyState::GraphicsRootArguments);
+     dirty_state_.set(DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature);
+   };
+ 
+@@ -1813,6 +1929,11 @@ public:
+         );
+       return;
+     }
++    if (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ && pso_graphics_->IsGeometryEmulated) {
++      if (warned++ < 10)
++        WARN("ambre-dx12: ExecuteIndirect avec un geometry shader emule : saute");
++      return;
++    }
+     // Diagnostic : fichier Allia/Logs/dx12-sans-indirect → commandes indirectes sautées.
+     static const bool skip_indirect = [] {
+       // Dossier personnel du Mac : WINEHOMEDIR (« \\??\\Z:\\Users\\… ») sous Wine.
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index b888b79..f6a9254 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -200,6 +200,11 @@ public:
+   float scole_scale;
+   float depth_bias_clamp;
+   uint32_t forced_sample_count;
++  /* Ambre (0028) : geometry shader émulé (pipeline mesh : sommets en object shader, geometry shader
++     en mesh shader) ; taille d'un sommet en sortie et primitives par groupe mesh, pour le dessin. */
++  uint32_t IsGeometryEmulated = 0;
++  uint32_t gs_vertex_size = 0;
++  uint32_t gs_max_input_primitives = 0;
+ 
+   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
+ 
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 36144bb..5a50e7b 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -590,8 +590,159 @@ public:
+ 
+   // Ambre : pipeline aux shaders DXIL convertis par le Metal Shader Converter. Sommets lus par
+   // Metal (descripteur de sommets, tampons à partir de l'index 6, attributs à partir de 11).
++  // Ambre (0028) : un shader DXIL converti pour l'émulation des geometry shaders (prise
++  // ambre_dxil_convert2 du module) ; pour des sommets, aussi la lecture des sommets.
++  HRESULT
++  ConvertEmulated(
++      D3D12_SHADER_BYTECODE Bytecode, uint32_t Topology, const WMTIRInputLayout *Layout, WMTIRReflection2 &Reflection,
++      WMT::Reference<WMT::Library> &Library, WMT::Reference<WMT::Library> *StageIn
++  ) {
++    AmbreDumpDXIL(Bytecode);
++    WMTIRCompileInfo2 info{};
++    info.base.dxil.set(Bytecode.pShaderBytecode);
++    info.base.dxil_size = Bytecode.BytecodeLength;
++    info.base.root_signature.set(
++        pDesc_root_signature_ ? static_cast<MTLD3D12RootSignature *>(pDesc_root_signature_)->GetVersionedDesc() : nullptr
++    );
++    info.flags = WMT_IR_GEOMETRY_EMULATION;
++    info.input_topology = Topology;
++    info.input_layout.set(Layout);
++    char error[512];
++    obj_handle_t stage_in = 0;
++    auto handle = IRConverter_newLibrary2(
++        device_->GetMTLDevice().handle, &info, &Reflection, StageIn ? &stage_in : nullptr, error, sizeof(error)
++    );
++    if (!handle) {
++      ERR("ambre-dx12: geometry shader non emule : ", error);
++      return E_FAIL;
++    }
++    Library = WMT::Reference<WMT::Library>(handle);
++    if (StageIn) {
++      if (!stage_in) {
++        ERR("ambre-dx12: geometry shader non emule : pas de lecture des sommets");
++        return E_FAIL;
++      }
++      *StageIn = WMT::Reference<WMT::Library>(stage_in);
++    }
++    return S_OK;
++  }
++
++  // Ambre (0028) : pipeline avec geometry shader, émulé par un pipeline mesh (Metal Shader
++  // Converter) : sommets → object shader (lecture des sommets liée), geometry shader → mesh shader.
++  HRESULT
++  InitializeGeometryEmulated(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
++    if (pDesc->PS.pShaderBytecode && !IsDXIL(pDesc->PS))
++      return E_NOTIMPL;
++    HRESULT hr;
++    auto metal = device_->GetMTLDevice();
++    pDesc_root_signature_ = pDesc->pRootSignature;
++
++    WMTRenderPipelineInfo info;
++    WMT::InitializeRenderPipelineInfo(info);
++    bool dual_source_blending = false;
++    if (FAILED(hr = InitializePSO(pDesc, info, dual_source_blending)))
++      return hr;
++
++    // Disposition des sommets au format du convertisseur (décalages « à la suite » calculés ici).
++    WMTIRInputLayout layout{};
++    layout.version = 1;
++    uint32_t append_offset[32] = {};
++    uint32_t used_slots = 0;
++    for (unsigned j = 0; j < pDesc->InputLayout.NumElements && layout.num_elements < 31; j++) {
++      auto &element = pDesc->InputLayout.pInputElementDescs[j];
++      if (element.InputSlot >= 31)
++        continue;
++      MTL_DXGI_FORMAT_DESC format;
++      if (FAILED(MTLQueryDXGIFormat(metal, element.Format, format)) || !format.BytesPerTexel) {
++        ERR("ambre-dx12: format de sommet non pris en charge : ", element.Format);
++        return E_INVALIDARG;
++      }
++      uint32_t offset = element.AlignedByteOffset == D3D12_APPEND_ALIGNED_ELEMENT
++                            ? align(append_offset[element.InputSlot], std::min(4u, format.BytesPerTexel))
++                            : element.AlignedByteOffset;
++      append_offset[element.InputSlot] = offset + format.BytesPerTexel;
++      auto &e = layout.elements[layout.num_elements];
++      layout.semantic_names[layout.num_elements] = (uint64_t)(uintptr_t)element.SemanticName;
++      e.semantic_index = element.SemanticIndex;
++      e.format = element.Format;
++      e.input_slot = element.InputSlot;
++      e.aligned_byte_offset = offset;
++      e.instance_data_step_rate = element.InstanceDataStepRate;
++      e.input_slot_class = element.InputSlotClass;
++      layout.num_elements++;
++      used_slots |= 1u << element.InputSlot;
++    }
++
++    WMTIRReflection2 vs_reflection{}, gs_reflection{};
++    WMT::Reference<WMT::Library> vs_library, stage_in_library, gs_library;
++    if (FAILED(hr = ConvertEmulated(pDesc->VS, pDesc->PrimitiveTopologyType, &layout, vs_reflection, vs_library, &stage_in_library)))
++      return hr;
++    if (FAILED(hr = ConvertEmulated(pDesc->GS, pDesc->PrimitiveTopologyType, nullptr, gs_reflection, gs_library, nullptr)))
++      return hr;
++    WMTIRReflection ps_reflection{};
++    WMT::Reference<WMT::Function> ps_func;
++    if (pDesc->PS.pShaderBytecode) {
++      uint32_t int_rt_mask = 0;
++      for (unsigned i = 0; i < pDesc->NumRenderTargets && i < 8; i++) {
++        if (IsIntegerFormat(pDesc->RTVFormats[i]))
++          int_rt_mask |= 1u << i;
++      }
++      if (FAILED(
++              hr = ConvertDXIL(
++                  device_, pDesc->PS, pDesc->pRootSignature, int_rt_mask, dual_source_blending, ps_func, ps_reflection
++              )
++          ))
++        return hr;
++    }
++
++    WMTGeometryEmulationPipelineInfo geometry{};
++    WMT::InitializeMeshRenderPipelineInfo(geometry.mesh);
++    for (unsigned i = 0; i < 8; i++)
++      geometry.mesh.colors[i] = info.colors[i];
++    geometry.mesh.alpha_to_coverage_enabled = info.alpha_to_coverage_enabled;
++    geometry.mesh.logic_operation_enabled = info.logic_operation_enabled;
++    geometry.mesh.logic_operation = info.logic_operation;
++    geometry.mesh.rasterization_enabled = info.rasterization_enabled;
++    geometry.mesh.raster_sample_count = info.raster_sample_count;
++    geometry.mesh.depth_pixel_format = info.depth_pixel_format;
++    geometry.mesh.stencil_pixel_format = info.stencil_pixel_format;
++    geometry.stage_in_library = stage_in_library.handle;
++    geometry.vertex_library = vs_library.handle;
++    geometry.geometry_library = gs_library.handle;
++    geometry.fragment_function = ps_func ? ps_func.handle : 0;
++    snprintf(geometry.vertex_function, sizeof(geometry.vertex_function), "%s", vs_reflection.base.entry_point);
++    snprintf(geometry.geometry_function, sizeof(geometry.geometry_function), "%s", gs_reflection.base.entry_point);
++    geometry.vertex_output_size = vs_reflection.vertex_output_size;
++    obj_handle_t err = 0;
++    auto handle = MTLDevice_newGeometryEmulationPipeline(metal.handle, &geometry, &err);
++    if (!handle) {
++      WMT::Error error;
++      error.handle = err;
++      ERR("ambre-dx12: pipeline emule refuse par Metal (", vs_reflection.base.entry_point, " / ",
++          gs_reflection.base.entry_point, ") : ", err ? error.description().getUTF8String() : "?");
++      return E_FAIL;
++    }
++    pso = WMT::Reference<WMT::RenderPipelineState>(handle);
++    InitializeDSSO(pDesc);
++    InitializeRasterizerState(pDesc);
++    slot_mask = used_slots;
++    gs_vertex_size = vs_reflection.vertex_output_size;
++    gs_max_input_primitives = std::max(1u, gs_reflection.gs_max_input_primitives);
++    IsConvertedPipelineState = 1;
++    IsGeometryEmulated = 1;
++    WARN("ambre-dx12: geometry shader emule : ", vs_reflection.base.entry_point, " / ", gs_reflection.base.entry_point,
++         " (sommet ", gs_vertex_size, " octets, ", gs_max_input_primitives, " primitives par groupe)");
++    return S_OK;
++  }
++
++  ID3D12RootSignature *pDesc_root_signature_ = nullptr;
++
+   HRESULT
+   InitializeConverted(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
++    // Ambre (0028) : geometry shader seul (sans tessellation ni stream output) → émulation.
++    if (pDesc->GS.pShaderBytecode && !pDesc->HS.pShaderBytecode && !pDesc->DS.pShaderBytecode &&
++        !pDesc->StreamOutput.NumEntries && IsDXIL(pDesc->GS))
++      return InitializeGeometryEmulated(pDesc);
+     if (pDesc->StreamOutput.NumEntries || pDesc->GS.pShaderBytecode || pDesc->HS.pShaderBytecode ||
+         pDesc->DS.pShaderBytecode) {
+       // Pas encore d'émulation (le convertisseur la fait avec des mesh shaders) : on note ce que
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 88d1d2d..7d748d9 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -805,12 +805,10 @@ _MTLDevice_newRenderPipelineState(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
+-static NTSTATUS
+-_MTLDevice_newMeshRenderPipelineState(void *obj) {
+-  struct unixcall_mtldevice_newmeshrenderpso *params = obj;
+-  const struct WMTMeshRenderPipelineInfo *info = params->info.ptr;
+-  MTLMeshRenderPipelineDescriptor *descriptor = [[MTLMeshRenderPipelineDescriptor alloc] init];
+-
++/* Ambre : pièces jointes, mélange et formats d'un pipeline mesh (partagé avec l'émulation des
++   geometry shaders). */
++static void
++fill_mesh_render_pipeline_descriptor(MTLMeshRenderPipelineDescriptor *descriptor, const struct WMTMeshRenderPipelineInfo *info) {
+   for (unsigned i = 0; i < 8; i++) {
+     descriptor.colorAttachments[i].pixelFormat = to_metal_pixel_format(info->colors[i].pixel_format);
+     descriptor.colorAttachments[i].blendingEnabled = info->colors[i].blending_enabled;
+@@ -843,6 +841,14 @@ _MTLDevice_newMeshRenderPipelineState(void *obj) {
+   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;
+   descriptor.rasterizationEnabled = info->rasterization_enabled;
+   descriptor.rasterSampleCount = info->raster_sample_count;
++}
++
++static NTSTATUS
++_MTLDevice_newMeshRenderPipelineState(void *obj) {
++  struct unixcall_mtldevice_newmeshrenderpso *params = obj;
++  const struct WMTMeshRenderPipelineInfo *info = params->info.ptr;
++  MTLMeshRenderPipelineDescriptor *descriptor = [[MTLMeshRenderPipelineDescriptor alloc] init];
++  fill_mesh_render_pipeline_descriptor(descriptor, info);
+ 
+   descriptor.objectFunction = (id<MTLFunction>)info->object_function;
+   descriptor.meshFunction = (id<MTLFunction>)info->mesh_function;
+@@ -3435,6 +3441,13 @@ typedef int (*ambre_dxil_convert_fn)(
+     const struct WMTIRCompileInfo *, struct WMTIRReflection *, void **, size_t *, char *, size_t
+ );
+ typedef void (*ambre_dxil_free_fn)(void *);
++/* Facultative (émulation des geometry shaders) :
++     int ambre_dxil_convert2(const struct WMTIRCompileInfo2 *, struct WMTIRReflection2 *, void **metallib,
++                             size_t *size, void **stage_in, size_t *stage_in_size, char *error, size_t error_size); */
++typedef int (*ambre_dxil_convert2_fn)(
++    const struct WMTIRCompileInfo2 *, struct WMTIRReflection2 *, void **, size_t *, void **, size_t *, char *, size_t
++);
++static ambre_dxil_convert2_fn ambre_dxil_convert2;
+ static ambre_dxil_convert_fn ambre_dxil_convert;
+ static ambre_dxil_free_fn ambre_dxil_free;
+ static pthread_once_t ambre_dxil_once = PTHREAD_ONCE_INIT;
+@@ -3460,6 +3473,7 @@ ambre_dxil_load(void) {
+   }
+   ambre_dxil_convert = (ambre_dxil_convert_fn)dlsym(lib, "ambre_dxil_convert");
+   ambre_dxil_free = (ambre_dxil_free_fn)dlsym(lib, "ambre_dxil_free");
++  ambre_dxil_convert2 = (ambre_dxil_convert2_fn)dlsym(lib, "ambre_dxil_convert2");
+   if (!ambre_dxil_convert || !ambre_dxil_free) {
+     ambre_dxil_convert = NULL;
+     fprintf(stderr, "ambre-dx12: module de conversion DXIL incomplet (%s)\n", path);
+@@ -3505,6 +3519,114 @@ _IRConverter_newLibrary(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++static id<MTLLibrary>
++ambre_new_library(id<MTLDevice> device, void *bytes, size_t size, char *error, size_t error_size) {
++  dispatch_data_t data = dispatch_data_create(bytes, size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
++  NSError *ns_error = NULL;
++  id<MTLLibrary> library = [device newLibraryWithData:data error:&ns_error];
++  dispatch_release(data);
++  if (!library)
++    snprintf(error, error_size, "bibliotheque Metal refusee : %s",
++             ns_error ? [[ns_error localizedDescription] UTF8String] : "?");
++  return library;
++}
++
++static NTSTATUS
++_IRConverter_newLibrary2(void *obj) {
++  struct unixcall_irconverter_newlibrary2 *params = obj;
++  const struct WMTIRCompileInfo2 *info = params->info.ptr;
++  struct WMTIRReflection2 *reflection = params->reflection.ptr;
++  char *error = params->error.ptr;
++  size_t error_size = params->error_size;
++  char fallback[256];
++  if (!error || !error_size) {
++    error = fallback;
++    error_size = sizeof(fallback);
++  }
++  params->ret_library = 0;
++  params->ret_stage_in_library = 0;
++
++  pthread_once(&ambre_dxil_once, ambre_dxil_load);
++  if (!ambre_dxil_convert2) {
++    snprintf(error, error_size, "module de conversion DXIL sans emulation des geometry shaders");
++    return STATUS_SUCCESS;
++  }
++  struct WMTIRReflection2 local_reflection;
++  void *bytes = NULL, *stage_in = NULL;
++  size_t size = 0, stage_in_size = 0;
++  if (ambre_dxil_convert2(info, reflection ? reflection : &local_reflection, &bytes, &size, &stage_in, &stage_in_size,
++                          error, error_size))
++    return STATUS_SUCCESS;
++  id<MTLLibrary> library = ambre_new_library((id<MTLDevice>)params->device, bytes, size, error, error_size);
++  ambre_dxil_free(bytes);
++  id<MTLLibrary> stage_in_library = nil;
++  if (stage_in) {
++    stage_in_library = library ? ambre_new_library((id<MTLDevice>)params->device, stage_in, stage_in_size, error, error_size)
++                               : nil;
++    ambre_dxil_free(stage_in);
++    if (!stage_in_library) {
++      [library release];
++      return STATUS_SUCCESS;
++    }
++  }
++  params->ret_library = (obj_handle_t)library;
++  params->ret_stage_in_library = (obj_handle_t)stage_in_library;
++  return STATUS_SUCCESS;
++}
++
++/* Ambre : pipeline mesh qui émule un geometry shader (même construction que
++   IRRuntimeNewGeometryEmulationPipeline du runtime d'Apple) : sommets en object shader
++   (« <nom>.dxil_irconverter_object_shader », tessellation coupée), lecture des sommets liée,
++   geometry shader en mesh shader (taille d'un sommet en constante), shader de pixels. */
++static NTSTATUS
++_MTLDevice_newGeometryEmulationPipeline(void *obj) {
++  struct unixcall_mtldevice_newgeometrypso *params = obj;
++  const struct WMTGeometryEmulationPipelineInfo *info = params->info.ptr;
++  params->ret_pso = 0;
++  params->ret_error = 0;
++  id<MTLLibrary> stage_in_library = (id<MTLLibrary>)info->stage_in_library;
++  id<MTLLibrary> vertex_library = (id<MTLLibrary>)info->vertex_library;
++  id<MTLLibrary> geometry_library = (id<MTLLibrary>)info->geometry_library;
++  MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
++  BOOL tessellation = NO;
++  [constants setConstantValue:&tessellation type:MTLDataTypeBool withName:@"tessellationEnabled"];
++  NSError *err = NULL;
++  id<MTLFunction> stage_in = [stage_in_library newFunctionWithName:stage_in_library.functionNames.firstObject];
++  NSString *object_name = [NSString stringWithFormat:@"%s.dxil_irconverter_object_shader", info->vertex_function];
++  id<MTLFunction> object = [vertex_library newFunctionWithName:object_name constantValues:constants error:&err];
++  id<MTLFunction> mesh = nil;
++  if (object) {
++    int vertex_size = (int)info->vertex_output_size;
++    [constants setConstantValue:&vertex_size type:MTLDataTypeInt withName:@"vertex_shader_output_size_fc"];
++    mesh = [geometry_library newFunctionWithName:[NSString stringWithUTF8String:info->geometry_function]
++                                  constantValues:constants
++                                           error:&err];
++  }
++  if (stage_in && object && mesh) {
++    MTLMeshRenderPipelineDescriptor *descriptor = [[MTLMeshRenderPipelineDescriptor alloc] init];
++    fill_mesh_render_pipeline_descriptor(descriptor, &info->mesh);
++    descriptor.objectFunction = object;
++    descriptor.meshFunction = mesh;
++    descriptor.fragmentFunction = (id<MTLFunction>)info->fragment_function;
++    MTLLinkedFunctions *linked = [[MTLLinkedFunctions alloc] init];
++    linked.functions = @[ stage_in ];
++    descriptor.objectLinkedFunctions = linked;
++    params->ret_pso = (obj_handle_t)[(id<MTLDevice>)params->device newRenderPipelineStateWithMeshDescriptor:descriptor
++                                                                                                    options:MTLPipelineOptionNone
++                                                                                                 reflection:nil
++                                                                                                      error:&err];
++    [linked release];
++    [descriptor release];
++  }
++  if (!params->ret_pso && err)
++    params->ret_error = (obj_handle_t)err;
++  [stage_in release];
++  [object release];
++  [mesh release];
++  [constants release];
++  return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ _IRConverter_unsupported(void *obj) {
+   return (NTSTATUS)0xC0000002; /* STATUS_NOT_IMPLEMENTED */
+@@ -3658,6 +3780,8 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
+     &_IRConverter_newLibrary,
++    &_IRConverter_newLibrary2,
++    &_MTLDevice_newGeometryEmulationPipeline,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -3809,5 +3933,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_MTLDevice_newLibraryWithSource,
+     &_MTLTexture_getBytes,
+     &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index 771e92f..d39935c 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -2214,6 +2214,70 @@ WINEMETAL_API obj_handle_t IRConverter_newLibrary(
+     uint64_t error_size
+ );
+ 
++/* Ambre : émulation des geometry shaders DirectX 12 (prise générique ambre_dxil_convert2 du module
++   de conversion). Les sommets deviennent un « object shader », le geometry shader un « mesh
++   shader » ; la lecture des sommets est une fonction à part, liée au pipeline. */
++#define WMT_IR_GEOMETRY_EMULATION 1u
++
++/* Même disposition que IRVersionedInputLayoutDescriptor (version 1) du convertisseur d'Apple. */
++struct WMTIRInputElement {
++  uint32_t semantic_index;
++  uint32_t format; /* DXGI_FORMAT */
++  uint32_t input_slot;
++  uint32_t aligned_byte_offset;
++  uint32_t instance_data_step_rate;
++  uint32_t input_slot_class; /* 0 sommets, 1 instances */
++};
++
++struct WMTIRInputLayout {
++  uint32_t version; /* 1 */
++  uint32_t padding;
++  uint64_t semantic_names[31]; /* const char * */
++  struct WMTIRInputElement elements[31];
++  uint32_t num_elements;
++  uint32_t padding2;
++};
++
++struct WMTIRCompileInfo2 {
++  struct WMTIRCompileInfo base;
++  uint32_t flags;          /* WMT_IR_GEOMETRY_EMULATION */
++  uint32_t input_topology; /* D3D12_PRIMITIVE_TOPOLOGY_TYPE (= IRInputTopology) */
++  struct WMTConstMemoryPointer input_layout; /* struct WMTIRInputLayout (sommets émulés), ou NULL */
++};
++
++struct WMTIRReflection2 {
++  struct WMTIRReflection base;
++  uint32_t vertex_output_size;      /* sommets : taille d'un sommet en sortie */
++  uint32_t gs_max_input_primitives; /* geometry shader : primitives par groupe « mesh » */
++  uint32_t gs_max_payload_size;
++  uint32_t gs_input_primitive;
++  uint32_t gs_instance_count;
++  uint32_t gs_passthrough;
++  uint32_t reserved[10];
++};
++
++/* Rend la bibliothèque convertie et, pour des sommets émulés, celle de la lecture des sommets. */
++WINEMETAL_API obj_handle_t IRConverter_newLibrary2(
++    obj_handle_t device, const struct WMTIRCompileInfo2 *info, struct WMTIRReflection2 *reflection,
++    obj_handle_t *stage_in_library, char *error, uint64_t error_size
++);
++
++struct WMTGeometryEmulationPipelineInfo {
++  struct WMTMeshRenderPipelineInfo mesh; /* pièces jointes, mélange, formats ; fonctions ignorées */
++  obj_handle_t stage_in_library;
++  obj_handle_t vertex_library;
++  obj_handle_t geometry_library;
++  obj_handle_t fragment_function; /* ou 0 */
++  char vertex_function[128];
++  char geometry_function[128];
++  uint32_t vertex_output_size;
++  uint32_t padding;
++};
++
++WINEMETAL_API obj_handle_t MTLDevice_newGeometryEmulationPipeline(
++    obj_handle_t device, const struct WMTGeometryEmulationPipelineInfo *info, obj_handle_t *err_out
++);
++
+ WINEMETAL_API void MTLTexture_getBytes(
+     obj_handle_t texture, struct WMTOrigin origin, struct WMTSize size, uint64_t level, uint64_t slice,
+     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 0679ac4..3d795e6 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1350,3 +1350,43 @@ IRConverter_newLibrary(
+     return 0;
+   return params.ret_library;
+ }
++
++WINEMETAL_API obj_handle_t
++IRConverter_newLibrary2(
++    obj_handle_t device, const struct WMTIRCompileInfo2 *info, struct WMTIRReflection2 *reflection,
++    obj_handle_t *stage_in_library, char *error, uint64_t error_size
++) {
++  struct unixcall_irconverter_newlibrary2 params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  WMT_MEMPTR_SET(params.reflection, reflection);
++  WMT_MEMPTR_SET(params.error, error);
++  params.error_size = error_size;
++  params.ret_library = 0;
++  params.ret_stage_in_library = 0;
++  if (error && error_size)
++    error[0] = 0;
++  if (stage_in_library)
++    *stage_in_library = 0;
++  if (UNIX_CALL(147, &params))
++    return 0;
++  if (stage_in_library)
++    *stage_in_library = params.ret_stage_in_library;
++  return params.ret_library;
++}
++
++WINEMETAL_API obj_handle_t
++MTLDevice_newGeometryEmulationPipeline(
++    obj_handle_t device, const struct WMTGeometryEmulationPipelineInfo *info, obj_handle_t *err_out
++) {
++  struct unixcall_mtldevice_newgeometrypso params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  params.ret_pso = 0;
++  params.ret_error = 0;
++  if (UNIX_CALL(148, &params))
++    return 0;
++  if (err_out)
++    *err_out = params.ret_error;
++  return params.ret_pso;
++}
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index c1cd261..5cf2975 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -444,6 +444,23 @@ struct unixcall_irconverter_newlibrary {
+   obj_handle_t ret_library;
+ };
+ 
++struct unixcall_irconverter_newlibrary2 {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  struct WMTMemoryPointer reflection;
++  struct WMTMemoryPointer error;
++  uint64_t error_size;
++  obj_handle_t ret_library;
++  obj_handle_t ret_stage_in_library;
++};
++
++struct unixcall_mtldevice_newgeometrypso {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  obj_handle_t ret_pso;
++  obj_handle_t ret_error;
++};
++
+ #pragma pack(pop)
+ 
+ #endif
