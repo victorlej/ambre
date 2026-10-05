@@ -1,0 +1,46 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index d45da2f..18e297b 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -1403,6 +1403,14 @@ public:
+                                 D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ |
+                                 D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_COPY_SOURCE |
+                                 D3D12_RESOURCE_STATE_RESOLVE_DEST | D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
++    for (UINT i = 0; i < Count && barriers; i++) {
++      if (barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING) { // Ambre (diagnostic 0030)
++        static std::atomic<uint32_t> aliasing = 0;
++        auto n = aliasing++;
++        if (n < 5 || (n & 4095) == 0)
++          WARN("ambre-heap: barriere d'alias n", n);
++      }
++    }
+     for (UINT i = 0; i < Count && barriers; i++) {
+       auto &b = barriers[i];
+       if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.StateAfter ||
+@@ -1820,6 +1828,10 @@ public:
+ 
+   void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) {
+     // do nothing for now
++    static std::atomic<uint32_t> discards = 0; // Ambre (diagnostic 0030)
++    auto n = discards++;
++    if (n < 5 || (n & 4095) == 0)
++      WARN("ambre-heap: DiscardResource n", n, " (ignore)");
+   };
+ 
+   void STDMETHODCALLTYPE
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 9a4f8c9..e524ee1 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -744,7 +744,10 @@ public:
+       D3D12_HEAP_DESC heap_desc;
+       static_cast<ID3D12Heap *>(pHeap)->GetDesc(&heap_desc);
+       auto n = placed++;
+-      if (empty ? missing++ < 40 : n < 40)
++      // 0030 : seulement les images de dessin, de profondeur ou de calcul (allocateur transitoire).
++      bool transient = pDesc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER && (pDesc->Flags & 0x7);
++      static std::atomic<uint32_t> transient_count = 0;
++      if (empty ? missing++ < 40 : (transient && transient_count++ < 60))
+         WARN("ambre-heap: ressource placee ", n, empty ? " SANS OBJET METAL" : "", " : dimension ", pDesc->Dimension,
+              ", format ", pDesc->Format, ", ", pDesc->Width, "x", pDesc->Height, "x", pDesc->DepthOrArraySize,
+              ", mips ", pDesc->MipLevels, ", flags ", (uint32_t)pDesc->Flags, ", decalage ", Offset, " dans un tas de ",

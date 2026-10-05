@@ -115,6 +115,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0029 diagnostic de l'allocateur transitoire d'Unreal (écran noir quand il est actif) : journal
      « ambre-heap: » des 40 premières ressources placées dans un tas et de toute ressource placée
      sans objet Metal. À retirer ensuite.
+0030 suite du diagnostic : seules les textures placées de dessin / profondeur / calcul sont notées
+     (les 40 premières de 0029 étaient des textures ordinaires, toutes créées par Metal), et les
+     DiscardResource (ignorés par Ambre) et barrières d'alias sont comptés. À retirer ensuite.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
