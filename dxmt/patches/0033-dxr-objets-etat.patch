@@ -1,0 +1,705 @@
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 050c4d4..6417a64 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -1497,9 +1497,8 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+-  CreateStateObject(const D3D12_STATE_OBJECT_DESC *, REFIID, void **) {
+-    WARN("ambre-dx12: CreateStateObject (pipelines de ray tracing) pas encore pris en charge");
+-    return E_NOTIMPL;
++  CreateStateObject(const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) {
++    return dxmt::CreateRTStateObject(this, pDesc, riid, ppStateObject);
+   }
+ 
+   void STDMETHODCALLTYPE
+diff --git a/src/d3d12/d3d12_raytracing.hpp b/src/d3d12/d3d12_raytracing.hpp
+index 3172ed5..c0c00b6 100644
+--- a/src/d3d12/d3d12_raytracing.hpp
++++ b/src/d3d12/d3d12_raytracing.hpp
+@@ -10,7 +10,13 @@
+ #pragma once
+ 
+ #include "d3d12_device.hpp"
++#include "d3d12_pageable.hpp"
++#include "com/com_pointer.hpp"
++#include <array>
+ #include <cstring>
++#include <map>
++#include <string>
++#include <vector>
+ 
+ namespace dxmt {
+ 
+@@ -78,4 +84,43 @@ AmbreFillGeometry(const D3D12_RAYTRACING_GEOMETRY_DESC &d, WMTAccelGeometry &g,
+   return g.vertex_buffer != 0 && g.primitive_count != 0;
+ }
+ 
++
++// Ambre : objet d'état de ray tracing (ID3D12StateObject). Les shaders de la bibliothèque DXIL sont
++// convertis en fonctions Metal « visibles » liées au noyau de lancement des rayons ; les
++// identifiants de shaders (32 octets, IRShaderIdentifier) sont des indices dans la table des
++// fonctions visibles (l'indice 0 veut dire « pas de shader »).
++class MTLD3D12RTStateObject : public MTLD3D12Pageable<ID3D12StateObject, ID3D12StateObjectProperties> {
++public:
++  MTLD3D12RTStateObject(MTLD3D12Device *pDevice)
++      : MTLD3D12Pageable<ID3D12StateObject, ID3D12StateObjectProperties>(pDevice) {}
++
++  HRESULT Initialize(const D3D12_STATE_OBJECT_DESC *pDesc);
++
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
++
++  void *STDMETHODCALLTYPE GetShaderIdentifier(const WCHAR *pExportName) override;
++  UINT64 STDMETHODCALLTYPE GetShaderStackSize(const WCHAR *pExportName) override;
++  UINT64 STDMETHODCALLTYPE GetPipelineStackSize() override { return pipeline_stack_size_; }
++  void STDMETHODCALLTYPE SetPipelineStackSize(UINT64 Size) override { pipeline_stack_size_ = Size; }
++
++  // Pipeline de lancement (« RaygenIndirection » + fonctions visibles liées) et sa table.
++  WMT::Reference<WMT::ComputePipelineState> pso;
++  WMT::Reference<WMT::Resource> table;
++  uint64_t table_id = 0;
++  std::vector<WMT::Reference<WMT::Function>> functions;
++  Com<MTLD3D12RootSignature, false> global_root_signature;
++  uint32_t max_attribute_size = 8;
++  uint32_t max_payload_size = 16;
++  uint32_t max_recursion_depth = 1;
++  // Identifiant (32 octets) de chaque export (shaders et groupes de touche).
++  std::map<std::string, std::array<uint8_t, 32>> identifiers;
++
++private:
++  UINT64 pipeline_stack_size_ = 0;
++};
++
++HRESULT CreateRTStateObject(
++    MTLD3D12Device *pDevice, const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject
++);
++
+ } // namespace dxmt
+diff --git a/src/d3d12/d3d12_state_object.cpp b/src/d3d12/d3d12_state_object.cpp
+new file mode 100644
+index 0000000..c043247
+--- /dev/null
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -0,0 +1,332 @@
++/*
++ * Ambre : DirectX Raytracing sur Metal (correctif 0033) — objets d'état de ray tracing.
++ *
++ * ID3D12Device5::CreateStateObject : les bibliothèques DXIL de ray tracing sont converties export
++ * par export par le module de conversion (prise ambre_dxil_rt_convert), liées au noyau de lancement
++ * des rayons synthétisé par le convertisseur d'Apple, et rangées dans une table de fonctions
++ * visibles. Ce fichier suit la licence de DXMT (LGPL 2.1).
++ */
++
++#include "d3d12_raytracing.hpp"
++#include "com/com_pointer.hpp"
++#include "log/log.hpp"
++#include "Metal.hpp"
++#include <algorithm>
++#include <atomic>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace dxmt {
++
++namespace {
++
++// IRShaderStage (metal_irconverter.h).
++enum RTStage : uint32_t {
++  kStageClosestHit = 9,
++  kStageIntersection = 10,
++  kStageAnyHit = 11,
++  kStageMiss = 12,
++  kStageRayGeneration = 13,
++  kStageCallable = 14,
++};
++
++std::string
++Narrow(const WCHAR *text) {
++  std::string out;
++  if (!text)
++    return out;
++  for (; *text; text++)
++    out.push_back(*text < 0x80 ? (char)*text : '?');
++  return out;
++}
++
++struct HitGroup {
++  std::string name;
++  bool procedural = false;
++  std::string any_hit, closest_hit, intersection;
++};
++
++struct ExportInfo {
++  std::string name;      // nom exporté
++  std::string dxil_name; // nom dans la bibliothèque
++  size_t library = 0;
++};
++
++} // namespace
++
++HRESULT STDMETHODCALLTYPE
++MTLD3D12RTStateObject::QueryInterface(REFIID riid, void **ppvObject) {
++  if (!ppvObject)
++    return E_POINTER;
++  *ppvObject = nullptr;
++  if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12DeviceChild) ||
++      riid == __uuidof(ID3D12Pageable) || riid == __uuidof(ID3D12StateObject)) {
++    *ppvObject = static_cast<ID3D12StateObject *>(ref(this));
++    return S_OK;
++  }
++  if (riid == __uuidof(ID3D12StateObjectProperties)) {
++    *ppvObject = static_cast<ID3D12StateObjectProperties *>(ref(this));
++    return S_OK;
++  }
++  if (logQueryInterfaceError(__uuidof(ID3D12StateObject), riid))
++    WARN("D3D12StateObject: Unknown interface query ", str::format(riid));
++  return E_NOINTERFACE;
++}
++
++void *STDMETHODCALLTYPE
++MTLD3D12RTStateObject::GetShaderIdentifier(const WCHAR *pExportName) {
++  auto found = identifiers.find(Narrow(pExportName));
++  return found == identifiers.end() ? nullptr : found->second.data();
++}
++
++UINT64 STDMETHODCALLTYPE
++MTLD3D12RTStateObject::GetShaderStackSize(const WCHAR *pExportName) {
++  // Metal gère lui-même la pile des appels de fonctions visibles (maxCallStackDepth).
++  return identifiers.count(Narrow(pExportName)) ? 0 : ~UINT64(0);
++}
++
++HRESULT
++MTLD3D12RTStateObject::Initialize(const D3D12_STATE_OBJECT_DESC *pDesc) {
++  if (!pDesc || !pDesc->pSubobjects)
++    return E_INVALIDARG;
++  if (pDesc->Type != D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE) {
++    WARN("ambre-dx12: objet d'etat de type collection pas encore pris en charge");
++    return E_NOTIMPL;
++  }
++
++  // -- 1. Lecture des sous-objets.
++  std::vector<const D3D12_DXIL_LIBRARY_DESC *> libraries;
++  std::vector<HitGroup> hit_groups;
++  struct Association {
++    const D3D12_STATE_SUBOBJECT *subobject;
++    std::vector<std::string> exports;
++  };
++  std::vector<Association> associations;
++  for (UINT i = 0; i < pDesc->NumSubobjects; i++) {
++    const auto &sub = pDesc->pSubobjects[i];
++    if (!sub.pDesc)
++      continue;
++    switch (sub.Type) {
++    case D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE: {
++      auto *rs = static_cast<const D3D12_GLOBAL_ROOT_SIGNATURE *>(sub.pDesc)->pGlobalRootSignature;
++      if (rs)
++        global_root_signature = static_cast<MTLD3D12RootSignature *>(rs);
++      break;
++    }
++    case D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY:
++      libraries.push_back(static_cast<const D3D12_DXIL_LIBRARY_DESC *>(sub.pDesc));
++      break;
++    case D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP: {
++      auto *d = static_cast<const D3D12_HIT_GROUP_DESC *>(sub.pDesc);
++      HitGroup g;
++      g.name = Narrow(d->HitGroupExport);
++      g.procedural = d->Type == D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE;
++      g.any_hit = Narrow(d->AnyHitShaderImport);
++      g.closest_hit = Narrow(d->ClosestHitShaderImport);
++      g.intersection = Narrow(d->IntersectionShaderImport);
++      hit_groups.push_back(std::move(g));
++      break;
++    }
++    case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG: {
++      auto *d = static_cast<const D3D12_RAYTRACING_SHADER_CONFIG *>(sub.pDesc);
++      max_payload_size = d->MaxPayloadSizeInBytes;
++      max_attribute_size = d->MaxAttributeSizeInBytes;
++      break;
++    }
++    case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG:
++      max_recursion_depth = static_cast<const D3D12_RAYTRACING_PIPELINE_CONFIG *>(sub.pDesc)->MaxTraceRecursionDepth;
++      break;
++    case D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION: {
++      auto *d = static_cast<const D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION *>(sub.pDesc);
++      Association a;
++      a.subobject = d->pSubobjectToAssociate;
++      for (UINT k = 0; k < d->NumExports; k++)
++        a.exports.push_back(Narrow(d->pExports[k]));
++      associations.push_back(std::move(a));
++      break;
++    }
++    case D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION:
++      WARN("ambre-dx12: collection existante pas encore prise en charge");
++      break;
++    default:
++      break;
++    }
++  }
++  if (libraries.empty()) {
++    WARN("ambre-dx12: objet d'etat de ray tracing sans bibliotheque DXIL");
++    return E_INVALIDARG;
++  }
++
++  // -- 2. Exports, signatures racine locales (par export ; association sans export = par défaut).
++  std::vector<ExportInfo> exports;
++  for (size_t l = 0; l < libraries.size(); l++) {
++    const auto *lib = libraries[l];
++    if (!lib->NumExports) {
++      WARN("ambre-dx12: bibliotheque DXIL sans liste d'exports pas encore prise en charge");
++      continue;
++    }
++    for (UINT k = 0; k < lib->NumExports; k++) {
++      ExportInfo e;
++      e.name = Narrow(lib->pExports[k].Name);
++      e.dxil_name = lib->pExports[k].ExportToRename ? Narrow(lib->pExports[k].ExportToRename) : e.name;
++      e.library = l;
++      exports.push_back(std::move(e));
++    }
++  }
++  std::unordered_map<std::string, MTLD3D12RootSignature *> local_signature;
++  MTLD3D12RootSignature *default_local_signature = nullptr;
++  std::unordered_map<std::string, const HitGroup *> hit_group_by_name;
++  for (auto &g : hit_groups)
++    hit_group_by_name[g.name] = &g;
++  for (auto &a : associations) {
++    if (!a.subobject || a.subobject->Type != D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE || !a.subobject->pDesc)
++      continue;
++    auto *rs = static_cast<const D3D12_LOCAL_ROOT_SIGNATURE *>(a.subobject->pDesc)->pLocalRootSignature;
++    if (!rs)
++      continue;
++    auto *signature = static_cast<MTLD3D12RootSignature *>(rs);
++    if (a.exports.empty()) {
++      default_local_signature = signature;
++      continue;
++    }
++    for (auto &name : a.exports) {
++      local_signature[name] = signature;
++      if (auto g = hit_group_by_name.find(name); g != hit_group_by_name.end()) {
++        for (auto *member : {&g->second->any_hit, &g->second->closest_hit, &g->second->intersection})
++          if (!member->empty() && !local_signature.count(*member))
++            local_signature[*member] = signature;
++      }
++    }
++  }
++  std::unordered_map<std::string, bool> procedural_member;
++  for (auto &g : hit_groups)
++    for (auto *member : {&g.any_hit, &g.closest_hit, &g.intersection})
++      if (!member->empty())
++        procedural_member[*member] = g.procedural;
++
++  // -- 3. Conversion export par export.
++  auto metal = device_->GetMTLDevice();
++  std::unordered_map<std::string, uint32_t> handle_by_export; // nom exporté -> indice dans la table (1..n)
++  std::unordered_map<std::string, uint32_t> stage_by_export;
++  for (auto &e : exports) {
++    const auto &library = libraries[e.library]->DXILLibrary;
++    WMTIRRTCompileInfo info;
++    memset(&info, 0, sizeof(info));
++    info.base.dxil.set(library.pShaderBytecode);
++    info.base.dxil_size = library.BytecodeLength;
++    info.base.root_signature.set(global_root_signature ? global_root_signature->GetVersionedDesc() : nullptr);
++    MTLD3D12RootSignature *local = default_local_signature;
++    if (auto found = local_signature.find(e.name); found != local_signature.end())
++      local = found->second;
++    info.local_root_signature.set(local ? local->GetVersionedDesc() : nullptr);
++    snprintf(info.export_name, sizeof(info.export_name), "%s", e.dxil_name.c_str());
++    info.max_attribute_size = max_attribute_size;
++    info.max_recursion_depth = max_recursion_depth;
++    auto procedural = procedural_member.find(e.name);
++    info.hit_group_type = procedural != procedural_member.end() && procedural->second ? 1 : 0;
++    WMTIRRTReflection reflection;
++    memset(&reflection, 0, sizeof(reflection));
++    char error[512];
++    auto handle = IRConverter_newRayTracingLibrary(metal.handle, &info, &reflection, error, sizeof(error));
++    if (!handle) {
++      ERR("ambre-dx12: shader de ray tracing ", e.dxil_name, " non converti : ", error);
++      return E_FAIL;
++    }
++    WMT::Reference<WMT::Library> lib(handle);
++    stage_by_export[e.name] = reflection.stage;
++    if (reflection.stage == kStageAnyHit || reflection.stage == kStageIntersection) {
++      // Pas encore pris en charge : le groupe de touche garde son plus proche touche, la géométrie
++      // est traitée comme opaque.
++      continue;
++    }
++    auto function = lib.newFunction(reflection.entry_point);
++    if (!function) {
++      ERR("ambre-dx12: fonction ", reflection.entry_point, " absente du shader ", e.dxil_name);
++      return E_FAIL;
++    }
++    functions.push_back(function);
++    handle_by_export[e.name] = (uint32_t)functions.size(); // indice 0 réservé
++  }
++
++  // -- 4. Noyau de lancement et pipeline.
++  WMT::Reference<WMT::Function> dispatch;
++  {
++    WMTIRRTCompileInfo info;
++    memset(&info, 0, sizeof(info));
++    info.base.root_signature.set(global_root_signature ? global_root_signature->GetVersionedDesc() : nullptr);
++    info.flags = WMT_IR_RT_DISPATCH;
++    info.max_attribute_size = max_attribute_size;
++    info.max_recursion_depth = max_recursion_depth;
++    WMTIRRTReflection reflection;
++    memset(&reflection, 0, sizeof(reflection));
++    char error[512];
++    auto handle = IRConverter_newRayTracingLibrary(metal.handle, &info, &reflection, error, sizeof(error));
++    if (!handle) {
++      ERR("ambre-dx12: noyau de lancement des rayons non synthetise : ", error);
++      return E_FAIL;
++    }
++    WMT::Reference<WMT::Library> lib(handle);
++    dispatch = lib.newFunction(reflection.entry_point);
++    if (!dispatch) {
++      ERR("ambre-dx12: fonction ", reflection.entry_point, " absente du noyau de lancement");
++      return E_FAIL;
++    }
++  }
++  std::vector<obj_handle_t> function_handles;
++  for (auto &f : functions)
++    function_handles.push_back(f.handle);
++  WMTRayTracingPipelineInfo pipeline;
++  memset(&pipeline, 0, sizeof(pipeline));
++  pipeline.dispatch_function = dispatch.handle;
++  pipeline.functions.set(function_handles.data());
++  pipeline.function_count = (uint32_t)function_handles.size();
++  pipeline.max_call_stack_depth = 8 + 4 * max_recursion_depth;
++  obj_handle_t table_handle = 0;
++  WMT::Reference<WMT::Error> err;
++  pso = metal.newRayTracingPipeline(pipeline, table_handle, table_id, err);
++  table = WMT::Reference<WMT::Resource>(table_handle);
++  if (!pso) {
++    ERR("ambre-dx12: pipeline de ray tracing refuse par Metal : ", err.description().getUTF8String());
++    return E_FAIL;
++  }
++
++  // -- 5. Identifiants.
++  auto identifier = [](uint64_t intersection, uint64_t shader) {
++    std::array<uint8_t, 32> id{};
++    memcpy(id.data(), &intersection, 8);
++    memcpy(id.data() + 8, &shader, 8);
++    return id;
++  };
++  for (auto &[name, handle] : handle_by_export) {
++    auto stage = stage_by_export[name];
++    if (stage == kStageRayGeneration || stage == kStageMiss || stage == kStageCallable)
++      identifiers[name] = identifier(0, handle);
++  }
++  for (auto &g : hit_groups) {
++    uint64_t closest = 0;
++    if (!g.closest_hit.empty()) {
++      auto found = handle_by_export.find(g.closest_hit);
++      if (found != handle_by_export.end())
++        closest = found->second;
++    }
++    identifiers[g.name] = identifier(0, closest);
++  }
++  static std::atomic<uint32_t> created = 0;
++  if (created++ < 20)
++    WARN("ambre-dx12: objet d'etat de ray tracing cree : ", functions.size(), " shaders, ", hit_groups.size(),
++         " groupes de touche");
++  return S_OK;
++}
++
++HRESULT
++CreateRTStateObject(MTLD3D12Device *pDevice, const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) {
++  auto object = Com(new MTLD3D12RTStateObject(pDevice));
++  HRESULT hr = object->Initialize(pDesc);
++  if (FAILED(hr))
++    return hr;
++  if (!ppStateObject)
++    return S_FALSE;
++  return object->QueryInterface(riid, ppStateObject);
++}
++
++} // namespace dxmt
+diff --git a/src/d3d12/meson.build b/src/d3d12/meson.build
+index ce23ea6..26237b3 100644
+--- a/src/d3d12/meson.build
++++ b/src/d3d12/meson.build
+@@ -15,6 +15,7 @@ d3d12_src = [
+   'd3d12_resource_helper.cpp',
+   'd3d12_root_signature.cpp',
+   'd3d12_sampler.cpp',
++  'd3d12_state_object.cpp',
+   'd3d12_swapchain.cpp',
+   'd3d12_texture.cpp',
+   '../d3d10/d3d10_blob.cpp',
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index abc28c7..402fba2 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -862,6 +862,17 @@ public:
+     return Reference<AccelerationStructure>(MTLDevice_newAccelerationStructure(handle, size));
+   }
+ 
++  // Ambre : pipeline de lancement des rayons (table des fonctions visibles rendue en sortie).
++  Reference<ComputePipelineState>
++  newRayTracingPipeline(
++      const WMTRayTracingPipelineInfo &info, obj_handle_t &table_out, uint64_t &table_id_out, Reference<Error> &err
++  ) {
++    obj_handle_t error_handle = 0;
++    auto pso = MTLDevice_newRayTracingPipeline(handle, &info, &table_out, &table_id_out, &error_handle);
++    err = Reference<Error>(error_handle);
++    return Reference<ComputePipelineState>(pso);
++  }
++
+   Reference<SamplerState>
+   newSamplerState(WMTSamplerInfo &info) {
+     return Reference<SamplerState>(MTLDevice_newSamplerState(handle, &info));
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index e7713c2..0462cf5 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3447,6 +3447,13 @@ typedef void (*ambre_dxil_free_fn)(void *);
+ typedef int (*ambre_dxil_convert2_fn)(
+     const struct WMTIRCompileInfo2 *, struct WMTIRReflection2 *, void **, size_t *, void **, size_t *, char *, size_t
+ );
++/* Facultative (ray tracing) :
++     int ambre_dxil_rt_convert(const struct WMTIRRTCompileInfo *, struct WMTIRRTReflection *, void **metallib,
++                               size_t *size, char *error, size_t error_size); */
++typedef int (*ambre_dxil_rt_convert_fn)(
++    const struct WMTIRRTCompileInfo *, struct WMTIRRTReflection *, void **, size_t *, char *, size_t
++);
++static ambre_dxil_rt_convert_fn ambre_dxil_rt_convert;
+ static ambre_dxil_convert2_fn ambre_dxil_convert2;
+ static ambre_dxil_convert_fn ambre_dxil_convert;
+ static ambre_dxil_free_fn ambre_dxil_free;
+@@ -3474,6 +3481,7 @@ ambre_dxil_load(void) {
+   ambre_dxil_convert = (ambre_dxil_convert_fn)dlsym(lib, "ambre_dxil_convert");
+   ambre_dxil_free = (ambre_dxil_free_fn)dlsym(lib, "ambre_dxil_free");
+   ambre_dxil_convert2 = (ambre_dxil_convert2_fn)dlsym(lib, "ambre_dxil_convert2");
++  ambre_dxil_rt_convert = (ambre_dxil_rt_convert_fn)dlsym(lib, "ambre_dxil_rt_convert");
+   if (!ambre_dxil_convert || !ambre_dxil_free) {
+     ambre_dxil_convert = NULL;
+     fprintf(stderr, "ambre-dx12: module de conversion DXIL incomplet (%s)\n", path);
+@@ -3814,6 +3822,81 @@ _MTLAccelerationStructureCommandEncoder_encodeCommands(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Ambre : ray tracing DirectX 12. */
++static NTSTATUS
++_IRConverter_newRayTracingLibrary(void *obj) {
++  struct unixcall_irconverter_newrtlibrary *params = obj;
++  const struct WMTIRRTCompileInfo *info = params->info.ptr;
++  struct WMTIRRTReflection *reflection = params->reflection.ptr;
++  char *error = params->error.ptr;
++  size_t error_size = params->error_size;
++  char fallback[256];
++  if (!error || !error_size) {
++    error = fallback;
++    error_size = sizeof(fallback);
++  }
++  params->ret_library = 0;
++  pthread_once(&ambre_dxil_once, ambre_dxil_load);
++  if (!ambre_dxil_rt_convert) {
++    snprintf(error, error_size, "module de conversion DXIL sans ray tracing");
++    return STATUS_SUCCESS;
++  }
++  struct WMTIRRTReflection local_reflection;
++  void *bytes = NULL;
++  size_t size = 0;
++  if (ambre_dxil_rt_convert(info, reflection ? reflection : &local_reflection, &bytes, &size, error, error_size))
++    return STATUS_SUCCESS;
++  params->ret_library = (obj_handle_t)ambre_new_library((id<MTLDevice>)params->device, bytes, size, error, error_size);
++  ambre_dxil_free(bytes);
++  return STATUS_SUCCESS;
++}
++
++/* Pipeline de lancement des rayons : « RaygenIndirection » avec toutes les fonctions visibles liées,
++   et une table de fonctions visibles (indice 0 réservé : « pas de shader »). */
++static NTSTATUS
++_MTLDevice_newRayTracingPipeline(void *obj) {
++  struct unixcall_mtldevice_newrtpso *params = obj;
++  const struct WMTRayTracingPipelineInfo *info = params->info.ptr;
++  const obj_handle_t *functions = info->functions.ptr;
++  params->ret_pso = 0;
++  params->ret_table = 0;
++  params->ret_table_id = 0;
++  params->ret_error = 0;
++  @autoreleasepool {
++    id<MTLDevice> device = (id<MTLDevice>)params->device;
++    NSMutableArray<id<MTLFunction>> *list = [NSMutableArray arrayWithCapacity:info->function_count];
++    for (uint32_t i = 0; i < info->function_count; i++)
++      [list addObject:(id<MTLFunction>)functions[i]];
++    MTLComputePipelineDescriptor *descriptor = [[MTLComputePipelineDescriptor alloc] init];
++    descriptor.computeFunction = (id<MTLFunction>)info->dispatch_function;
++    MTLLinkedFunctions *linked = [MTLLinkedFunctions linkedFunctions];
++    linked.functions = list;
++    descriptor.linkedFunctions = linked;
++    descriptor.maxCallStackDepth = info->max_call_stack_depth ? info->max_call_stack_depth : 8;
++    NSError *err = nil;
++    id<MTLComputePipelineState> pso = [device newComputePipelineStateWithDescriptor:descriptor
++                                                                           options:MTLPipelineOptionNone
++                                                                        reflection:nil
++                                                                             error:&err];
++    [descriptor release];
++    if (!pso) {
++      if (err)
++        params->ret_error = (obj_handle_t)[err retain];
++      return STATUS_SUCCESS;
++    }
++    MTLVisibleFunctionTableDescriptor *table_descriptor = [MTLVisibleFunctionTableDescriptor visibleFunctionTableDescriptor];
++    table_descriptor.functionCount = info->function_count + 1;
++    id<MTLVisibleFunctionTable> table = [pso newVisibleFunctionTableWithDescriptor:table_descriptor];
++    for (uint32_t i = 0; i < info->function_count; i++)
++      [table setFunction:[pso functionHandleWithFunction:list[i]] atIndex:i + 1];
++    MTLResourceID table_id = [table gpuResourceID];
++    params->ret_pso = (obj_handle_t)pso;
++    params->ret_table = (obj_handle_t)table;
++    params->ret_table_id = *(uint64_t *)&table_id;
++  }
++  return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ _IRConverter_unsupported(void *obj) {
+   return (NTSTATUS)0xC0000002; /* STATUS_NOT_IMPLEMENTED */
+@@ -3974,6 +4057,8 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLAccelerationStructure_gpuResourceID,
+     &_MTLCommandBuffer_accelerationStructureCommandEncoder,
+     &_MTLAccelerationStructureCommandEncoder_encodeCommands,
++    &_IRConverter_newRayTracingLibrary,
++    &_MTLDevice_newRayTracingPipeline,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -4132,5 +4217,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index dda3283..e0b12bc 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -2376,4 +2376,45 @@ WINEMETAL_API void MTLAccelerationStructureCommandEncoder_encodeCommands(
+ );
+ 
+ 
++/* Ambre : ray tracing DirectX 12 (prise générique ambre_dxil_rt_convert du module de conversion).
++   Un export d'une bibliothèque DXIL de ray tracing devient une fonction Metal « visible » ; avec
++   WMT_IR_RT_DISPATCH, la fonction de lancement des rayons (« RaygenIndirection ») est synthétisée.
++   Dans la table des fonctions visibles, l'indice 0 est réservé (« pas de shader »). */
++#define WMT_IR_RT_DISPATCH 1u
++
++struct WMTIRRTCompileInfo {
++  struct WMTIRCompileInfo base; /* dxil = bibliothèque ; root_signature = signature racine globale */
++  struct WMTConstMemoryPointer local_root_signature; /* D3D12_VERSIONED_ROOT_SIGNATURE_DESC, ou NULL */
++  char export_name[128];
++  uint32_t flags;
++  uint32_t max_attribute_size;
++  uint32_t max_recursion_depth;
++  uint32_t hit_group_type; /* 0 : triangles, 1 : primitives procédurales */
++};
++
++struct WMTIRRTReflection {
++  uint32_t stage; /* IRShaderStage : 9 plus proche touche, 10 intersection, 11 any-hit, 12 manqué, 13 génération, 14 appelable */
++  uint32_t reserved;
++  char entry_point[128];
++};
++
++WINEMETAL_API obj_handle_t IRConverter_newRayTracingLibrary(
++    obj_handle_t device, const struct WMTIRRTCompileInfo *info, struct WMTIRRTReflection *reflection, char *error,
++    uint64_t error_size
++);
++
++struct WMTRayTracingPipelineInfo {
++  obj_handle_t dispatch_function;          /* « RaygenIndirection » */
++  struct WMTConstMemoryPointer functions;  /* obj_handle_t[function_count] : fonctions visibles (indices 1..n) */
++  uint32_t function_count;
++  uint32_t max_call_stack_depth;
++};
++
++/* Rend le pipeline de calcul ; la table des fonctions visibles (n + 1 entrées) et son identifiant
++   GPU sont rendus en sortie. */
++WINEMETAL_API obj_handle_t MTLDevice_newRayTracingPipeline(
++    obj_handle_t device, const struct WMTRayTracingPipelineInfo *info, obj_handle_t *table_out,
++    uint64_t *table_id_out, obj_handle_t *err_out
++);
++
+ #endif
+\ No newline at end of file
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index f205699..f12136c 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1440,3 +1440,45 @@ MTLAccelerationStructureCommandEncoder_encodeCommands(obj_handle_t encoder, cons
+   WMT_MEMPTR_SET(params.cmd_head, cmd_head);
+   UNIX_CALL(153, &params);
+ }
++
++WINEMETAL_API obj_handle_t
++IRConverter_newRayTracingLibrary(
++    obj_handle_t device, const struct WMTIRRTCompileInfo *info, struct WMTIRRTReflection *reflection, char *error,
++    uint64_t error_size
++) {
++  struct unixcall_irconverter_newrtlibrary params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  WMT_MEMPTR_SET(params.reflection, reflection);
++  WMT_MEMPTR_SET(params.error, error);
++  params.error_size = error_size;
++  params.ret_library = 0;
++  if (error && error_size)
++    error[0] = 0;
++  if (UNIX_CALL(154, &params))
++    return 0;
++  return params.ret_library;
++}
++
++WINEMETAL_API obj_handle_t
++MTLDevice_newRayTracingPipeline(
++    obj_handle_t device, const struct WMTRayTracingPipelineInfo *info, obj_handle_t *table_out,
++    uint64_t *table_id_out, obj_handle_t *err_out
++) {
++  struct unixcall_mtldevice_newrtpso params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  params.ret_pso = 0;
++  params.ret_table = 0;
++  params.ret_table_id = 0;
++  params.ret_error = 0;
++  if (UNIX_CALL(155, &params))
++    return 0;
++  if (table_out)
++    *table_out = params.ret_table;
++  if (table_id_out)
++    *table_id_out = params.ret_table_id;
++  if (err_out)
++    *err_out = params.ret_error;
++  return params.ret_pso;
++}
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index 8b223ae..c6b1c2f 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -467,6 +467,24 @@ struct unixcall_mtldevice_accelsizes {
+   struct WMTMemoryPointer sizes;
+ };
+ 
++struct unixcall_irconverter_newrtlibrary {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  struct WMTMemoryPointer reflection;
++  struct WMTMemoryPointer error;
++  uint64_t error_size;
++  obj_handle_t ret_library;
++};
++
++struct unixcall_mtldevice_newrtpso {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer info;
++  obj_handle_t ret_pso;
++  obj_handle_t ret_table;
++  uint64_t ret_table_id;
++  obj_handle_t ret_error;
++};
++
+ #pragma pack(pop)
+ 
+ #endif

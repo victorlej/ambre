@@ -131,6 +131,16 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      convertisseur d'Apple) ; les instances du niveau haut sont converties sur la carte graphique
      (noyau interne) en instances Metal « indirectes ». Exposé aux jeux seulement avec AMBRE_DXR=1
      (le niveau de ray tracing n'est pas annoncé : rien ne change pour les jeux).
+0033 DirectX Raytracing, étape 3 : objets d'état (ID3D12Device5::CreateStateObject). winemetal :
+     IRConverter_newRayTracingLibrary (prise générique ambre_dxil_rt_convert du module de conversion :
+     un export d'une bibliothèque DXIL de ray tracing en fonction Metal visible, ou la fonction de
+     lancement « RaygenIndirection »), MTLDevice_newRayTracingPipeline (pipeline de calcul avec les
+     fonctions liées + table de fonctions visibles ; l'indice 0 est réservé : « pas de shader ») ;
+     d3d12 : MTLD3D12RTStateObject (bibliothèques DXIL avec liste d'exports, groupes de touche,
+     configuration, signatures racine globale et locales par association) et
+     ID3D12StateObjectProperties (identifiants de shaders de 32 octets = IRShaderIdentifier). Les
+     any-hit et intersection ne sont pas encore pris en charge (géométrie traitée comme opaque).
+     DispatchRays reste à faire.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
