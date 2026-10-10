@@ -1,0 +1,1469 @@
+diff --git a/src/d3d12/d3d12_command_allocator.cpp b/src/d3d12/d3d12_command_allocator.cpp
+index c218920..9d1ca2c 100644
+--- a/src/d3d12/d3d12_command_allocator.cpp
++++ b/src/d3d12/d3d12_command_allocator.cpp
+@@ -134,6 +134,9 @@ MTLD3D12CommandAllocatorImpl::Reset() {
+       case EncoderType::Resolve:
+         reinterpret_cast<ResolveEncoderData *>(next)->~ResolveEncoderData();
+         break;
++      case EncoderType::Accel:
++        reinterpret_cast<AccelEncoderData *>(next)->~AccelEncoderData();
++        break;
+       }
+       next = next->next;
+     }
+diff --git a/src/d3d12/d3d12_command_allocator.hpp b/src/d3d12/d3d12_command_allocator.hpp
+index e106054..45c9dc4 100644
+--- a/src/d3d12/d3d12_command_allocator.hpp
++++ b/src/d3d12/d3d12_command_allocator.hpp
+@@ -224,6 +224,18 @@ public:
+     return *storage;
+   }
+ 
++  template <typename cmd_struct>
++  cmd_struct &
++  EncodeAccelCommand() {
++    assert(encoder_current->type == EncoderType::Accel);
++    auto encoder = static_cast<AccelEncoderData *>(encoder_current);
++    auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
++    encoder->cmd_tail->next.set(storage);
++    encoder->cmd_tail = (wmtcmd_base *)storage;
++    storage->next.set(nullptr);
++    return *storage;
++  }
++
+   std::tuple<void *, size_t>
+   AllocateGPUHeap(size_t Length, size_t Alignment) {
+     if (!Length)
+diff --git a/src/d3d12/d3d12_command_encoder.hpp b/src/d3d12/d3d12_command_encoder.hpp
+index da2d936..54831bb 100644
+--- a/src/d3d12/d3d12_command_encoder.hpp
++++ b/src/d3d12/d3d12_command_encoder.hpp
+@@ -30,6 +30,7 @@ enum class EncoderType {
+   Blit,
+   Compute,
+   Resolve,
++  Accel, // Ambre : structures d'accélération (DXR)
+ };
+ 
+ struct EncoderData {
+@@ -119,6 +120,10 @@ struct ComputeEncoderData : EncoderData {
+   wmtcmd_compute_nop cmd_head;
+   wmtcmd_base *cmd_tail;
+ };
++struct AccelEncoderData : EncoderData {
++  wmtcmd_accel_nop cmd_head;
++  wmtcmd_base *cmd_tail;
++};
+ struct ResolveEncoderData : EncoderData {
+   TextureViewRef src;
+   TextureViewRef dst;
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index b87c262..923c92b 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "d3d12_command_allocator.hpp"
++#include <algorithm>
+ #include <atomic>
+ #include <map>
+ #include "thread.hpp"
+@@ -24,6 +25,7 @@
+ #include "util_env.hpp"
+ #include "com/com_pointer.hpp"
+ #include "dxmt_format.hpp"
++#include "d3d12_raytracing.hpp"
+ 
+ namespace dxmt {
+ 
+@@ -194,6 +196,129 @@ AmbreClamp(WMT::Device device) {
+   return pipelines;
+ }
+ 
++// Ambre : DirectX Raytracing — petits noyaux de calcul internes.
++//  - ambre_accel_instances : convertit les instances d'un niveau haut (D3D12_RAYTRACING_INSTANCE_DESC,
++//    64 octets, adresse du niveau bas) en instances Metal « indirectes » (72 octets, identifiant du
++//    niveau bas lu dans l'en-tête que sa construction a écrit à son adresse), et écrit l'en-tête du
++//    niveau haut (identifiant + adresse du tableau des contributions) au format du convertisseur
++//    d'Apple, suivi du tableau des contributions.
++//  - ambre_accel_write : écrit quelques mots de 64 bits (en-tête d'un niveau bas, informations de
++//    fin de construction).
++static const char kAmbreAccelSource[] = R"(
++#include <metal_stdlib>
++using namespace metal;
++struct AmbreAccelInstanceArgs {
++  device const uchar *src;
++  device uchar *dst;
++  device uchar *header;
++  ulong header_va;
++  ulong tlas_id;
++  ulong fallback_id;
++  uint count;
++  uint pointers;
++};
++kernel void ambre_accel_instances(uint tid [[thread_position_in_grid]], constant AmbreAccelInstanceArgs &a [[buffer(30)]]) {
++  if (tid == 0) {
++    device ulong *h = (device ulong *)a.header;
++    h[0] = a.tlas_id;
++    h[1] = a.header_va + 64;
++    for (uint i = 2; i < 8; i++)
++      h[i] = 0;
++  }
++  if (tid >= a.count)
++    return;
++  device const uchar *s = a.src + ulong(tid) * 64;
++  if (a.pointers != 0) {
++    ulong p = ((device const ulong *)a.src)[tid];
++    s = (device const uchar *)p;
++  }
++  device const float *m = (device const float *)s;
++  device float *o = (device float *)(a.dst + ulong(tid) * 72);
++  for (uint c = 0; c < 4; c++)
++    for (uint r = 0; r < 3; r++)
++      o[c * 3 + r] = m[r * 4 + c];
++  uint w0 = *(device const uint *)(s + 48);
++  uint w1 = *(device const uint *)(s + 52);
++  ulong va = *(device const ulong *)(s + 56);
++  uint mask = w0 >> 24;
++  ulong id = a.fallback_id;
++  if (va != 0) {
++    id = *(device const ulong *)va;
++    if (id == 0) {
++      id = a.fallback_id;
++      mask = 0;
++    }
++  } else {
++    mask = 0;
++  }
++  device uint *o32 = (device uint *)(a.dst + ulong(tid) * 72 + 48);
++  o32[0] = w1 >> 24;
++  o32[1] = mask;
++  o32[2] = 0;
++  o32[3] = w0 & 0xFFFFFFu;
++  *(device ulong *)(a.dst + ulong(tid) * 72 + 64) = id;
++  ((device uint *)(a.header + 64))[tid] = w1 & 0xFFFFFFu;
++}
++struct AmbreAccelWriteArgs {
++  device ulong *dst;
++  ulong values[6];
++  uint count;
++  uint pad;
++};
++kernel void ambre_accel_write(uint tid [[thread_position_in_grid]], constant AmbreAccelWriteArgs &a [[buffer(30)]]) {
++  if (tid < a.count)
++    a.dst[tid] = a.values[tid];
++}
++)";
++
++struct AmbreAccelPipelines {
++  WMT::Reference<WMT::ComputePipelineState> instances;
++  WMT::Reference<WMT::ComputePipelineState> write;
++  bool tried = false;
++};
++
++static AmbreAccelPipelines &
++AmbreAccel(WMT::Device device) {
++  static dxmt::mutex lock;
++  static std::map<obj_handle_t, AmbreAccelPipelines> all;
++  std::unique_lock<dxmt::mutex> guard(lock);
++  auto &pipelines = all[device.handle];
++  if (pipelines.tried)
++    return pipelines;
++  pipelines.tried = true;
++  WMT::Reference<WMT::Error> err;
++  auto library = device.newLibraryWithSource(std::string_view(kAmbreAccelSource, sizeof(kAmbreAccelSource) - 1), err);
++  if (!library) {
++    ERR("ambre-dx12: noyaux de structures d'acceleration non compiles : ", err.description().getUTF8String());
++    return pipelines;
++  }
++  auto instances = library.newFunction("ambre_accel_instances");
++  pipelines.instances = device.newComputePipelineState(instances, err);
++  auto write = library.newFunction("ambre_accel_write");
++  pipelines.write = device.newComputePipelineState(write, err);
++  if (!pipelines.instances || !pipelines.write)
++    ERR("ambre-dx12: noyaux de structures d'acceleration incomplets");
++  return pipelines;
++}
++
++struct AmbreAccelInstanceArgs {
++  uint64_t src;
++  uint64_t dst;
++  uint64_t header;
++  uint64_t header_va;
++  uint64_t tlas_id;
++  uint64_t fallback_id;
++  uint32_t count;
++  uint32_t pointers;
++};
++
++struct AmbreAccelWriteArgs {
++  uint64_t dst;
++  uint64_t values[6];
++  uint32_t count;
++  uint32_t pad;
++};
++
+ // `Graphics`CommandList is a really confusing name
+ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList> {
+ 
+@@ -330,6 +455,13 @@ public:
+       return S_OK;
+     }
+ 
++    // Ambre : DXR (AMBRE_DXR=1 seulement).
++    if ((riid == __uuidof(ID3D12GraphicsCommandList3) || riid == __uuidof(ID3D12GraphicsCommandList4)) &&
++        AmbreDxrEnabled()) {
++      *ppvObject = ref(this);
++      return S_OK;
++    }
++
+     if (logQueryInterfaceError(__uuidof(ID3D12GraphicsCommandList), riid)) {
+       WARN("D3D12GraphicsCommandList: Unknown interface query ", str::format(riid));
+     }
+@@ -2198,6 +2330,348 @@ public:
+   ) {
+     IMPLEMENT_ME
+   }
++
++  /* Ambre : ID3D12GraphicsCommandList3 / 4 — DirectX Raytracing (structures d'accélération). */
++
++  // Passe de calcul interne : un noyau MSL, ses arguments en constante (emplacement 30).
++  void
++  AmbreAccelCompute(WMT::ComputePipelineState Pso, const void *Args, size_t Size, uint32_t Threads) {
++    if (!Pso || !Threads)
++      return;
++    if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute) {
++      allocator_->InvalidateCurrentPass();
++      auto compute = allocator_->AllocatePass<ComputeEncoderData>();
++      compute->type = EncoderType::Compute;
++      compute->cmd_head.type = WMTComputeCommandNop;
++      compute->cmd_head.next.set(0);
++      compute->cmd_tail = (wmtcmd_base *)&compute->cmd_head;
++    }
++    auto [Params, ParamsOffset] = allocator_->AllocateGPUHeap(Size, 16);
++    memcpy(Params, Args, Size);
++    auto &setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
++    setpso.type = WMTComputeCommandSetPSO;
++    setpso.pso = Pso.handle;
++    setpso.threadgroup_size = {64, 1, 1};
++    auto &setbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
++    setbuf.type = WMTComputeCommandSetBuffer;
++    setbuf.buffer = allocator_->gpu_heap_buffer_.handle;
++    setbuf.offset = ParamsOffset;
++    setbuf.index = 30;
++    auto &run = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
++    run.type = WMTComputeCommandDispatchThreads;
++    run.size = {Threads, 1, 1};
++    // Les calculs du jeu repartent d'un état propre.
++    dirty_state_.set(DirtyState::ComputeRootArguments, DirtyState::ComputeRootSignature);
++    dirty_state_.set(DirtyState::ComputePipelineState);
++    allocator_->InvalidateCurrentPass();
++  }
++
++  // Écrit jusqu'à six mots de 64 bits à une adresse GPU (en-tête, informations de fin de construction).
++  void
++  AmbreAccelWriteWords(D3D12_GPU_VIRTUAL_ADDRESS VA, const uint64_t *Values, uint32_t Count) {
++    if (!VA || !Count || Count > 6)
++      return;
++    auto &pipelines = AmbreAccel(device_->GetMTLDevice());
++    AmbreAccelWriteArgs args = {};
++    args.dst = VA;
++    for (uint32_t i = 0; i < Count; i++)
++      args.values[i] = Values[i];
++    args.count = Count;
++    AmbreAccelCompute(pipelines.write, &args, sizeof(args), Count);
++  }
++
++  void
++  AmbreAccelBeginPass() {
++    allocator_->InvalidateCurrentPass();
++    auto accel = allocator_->AllocatePass<AccelEncoderData>();
++    accel->type = EncoderType::Accel;
++    accel->cmd_head.type = WMTAccelCommandNop;
++    accel->cmd_head.next.set(0);
++    accel->cmd_tail = (wmtcmd_base *)&accel->cmd_head;
++  }
++
++  // Valeur annoncée pour COMPACTED_SIZE / CURRENT_SIZE : la taille du tampon que nous demandons.
++  static uint64_t
++  AmbreAccelResultSize(const AmbreAccelStructure &Accel) {
++    return AmbreAccelAlign256(Accel.top_level ? kAmbreAccelHeaderSize + 4ull * Accel.instance_capacity : kAmbreAccelHeaderSize);
++  }
++
++  void
++  AmbreAccelPostbuild(
++      UINT Count, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pDescs, uint64_t Value
++  ) {
++    for (UINT i = 0; i < Count; i++) {
++      uint64_t words[6] = {};
++      uint32_t count = 0;
++      switch (pDescs[i].InfoType) {
++      case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE:
++      case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE:
++        words[0] = Value;
++        count = 1;
++        break;
++      case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TOOLS_VISUALIZATION:
++        count = 2; // taille sérialisée et nombre de niveaux bas : zéro
++        break;
++      case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION:
++        count = 6; // identifiants du pilote (32 octets), taille, nombre de pointeurs : zéro
++        break;
++      default:
++        continue;
++      }
++      AmbreAccelWriteWords(pDescs[i].DestBuffer, words, count);
++    }
++  }
++
++  void STDMETHODCALLTYPE
++  BuildRaytracingAccelerationStructure(
++      const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *pDesc, UINT NumPostbuildInfoDescs,
++      const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pPostbuildInfoDescs
++  ) {
++    static std::atomic<uint32_t> warned = 0;
++    if (!pDesc || !pDesc->DestAccelerationStructureData)
++      return;
++    const auto &in = pDesc->Inputs;
++    bool top = in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
++    bool update = (in.Flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE) != 0;
++    auto device = device_->GetMTLDevice();
++    auto &pipelines = AmbreAccel(device);
++    auto dummy = device_->AmbreDummyBuffer().handle;
++
++    WMTAccelDescriptor desc;
++    memset(&desc, 0, sizeof(desc));
++    desc.usage = AmbreAccelUsage(in.Flags);
++    WMTAccelGeometry *geometries = nullptr;
++    if (top) {
++      desc.kind = 1;
++      desc.instance_count = in.NumDescs;
++      desc.instance_buffer = dummy;
++      if (!in.NumDescs || !in.InstanceDescs)
++        return;
++    } else {
++      if (!in.NumDescs)
++        return;
++      geometries = allocator_->AllocateCommandData<WMTAccelGeometry>(in.NumDescs);
++      unsigned valid = 0;
++      auto resolve = [&](D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *offset) -> obj_handle_t {
++        auto allocation = device_->LookupBufferByVA(VA, offset);
++        return allocation ? allocation->buffer().handle : 0;
++      };
++      for (unsigned i = 0; i < in.NumDescs; i++) {
++        const D3D12_RAYTRACING_GEOMETRY_DESC *g = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY
++                                                      ? &in.pGeometryDescs[i]
++                                                      : in.ppGeometryDescs[i];
++        if (g && AmbreFillGeometry(*g, geometries[valid], resolve))
++          valid++;
++        else if (warned++ < 10)
++          WARN("ambre-dx12: geometrie DXR ignoree (tampon introuvable ou vide)");
++      }
++      if (!valid)
++        return;
++      desc.geometry_count = valid;
++      desc.geometries.set(geometries);
++    }
++
++    auto sizes = device.accelerationStructureSizes(desc);
++    if (!sizes.structure_size) {
++      if (warned++ < 10)
++        WARN("ambre-dx12: taille de structure d'acceleration nulle : construction sautee");
++      return;
++    }
++
++    // Tampon d'échafaudage fourni par le jeu.
++    uint64_t scratch_offset = 0;
++    obj_handle_t scratch = 0;
++    if (auto allocation = device_->LookupBufferByVA(pDesc->ScratchAccelerationStructureData, &scratch_offset))
++      scratch = allocation->buffer().handle;
++    if (!scratch) {
++      if (warned++ < 10)
++        WARN("ambre-dx12: tampon d'echafaudage introuvable : construction sautee");
++      return;
++    }
++
++    auto source = update ? device_->AmbreGetAccel(pDesc->SourceAccelerationStructureData) : nullptr;
++    if (update && !source) {
++      if (warned++ < 10)
++        WARN("ambre-dx12: mise a jour d'une structure inconnue : construction complete");
++      update = false;
++    }
++    std::shared_ptr<AmbreAccelStructure> accel;
++    if (update && pDesc->SourceAccelerationStructureData == pDesc->DestAccelerationStructureData) {
++      accel = source;
++    } else {
++      auto existing = device_->AmbreGetAccel(pDesc->DestAccelerationStructureData);
++      // Pas de réutilisation si la structure est partagée (copie « compactée » par alias).
++      if (existing && existing->top_level == top && existing->size >= sizes.structure_size && existing.use_count() <= 2) {
++        accel = existing;
++      } else {
++        accel = std::make_shared<AmbreAccelStructure>();
++        accel->structure = device.newAccelerationStructure(sizes.structure_size);
++        if (!accel->structure) {
++          ERR("ambre-dx12: structure d'acceleration non creee (", sizes.structure_size, " octets)");
++          return;
++        }
++        accel->resource_id = accel->structure.gpuResourceID();
++        accel->size = sizes.structure_size;
++        accel->top_level = top;
++      }
++    }
++
++    if (top) {
++      if (accel->instance_capacity < in.NumDescs || !accel->instances) {
++        uint32_t capacity = std::max<uint32_t>(in.NumDescs, accel->instance_capacity ? accel->instance_capacity * 2 : 1024);
++        WMTBufferInfo info;
++        info.memory.set(nullptr);
++        info.length = uint64_t(capacity) * WMT_ACCEL_INSTANCE_STRIDE;
++        info.options = (WMTResourceOptions)(WMTResourceStorageModePrivate | WMTResourceHazardTrackingModeUntracked);
++        info.gpu_address = 0;
++        auto buffer = device.newBuffer(info);
++        if (!buffer) {
++          ERR("ambre-dx12: tampon des instances non cree (", capacity, " instances)");
++          return;
++        }
++        device_->RegisterResidency(WMT::Allocation{buffer.handle});
++        if (accel->instances)
++          accel->retired.push_back(accel->instances);
++        accel->instances = buffer;
++        accel->instances_address = info.gpu_address;
++        accel->instance_capacity = capacity;
++      }
++      desc.instance_buffer = accel->instances.handle;
++      desc.instance_offset = 0;
++      // Conversion des instances (et en-tête) : avant la construction.
++      AmbreAccelInstanceArgs args = {};
++      args.src = in.InstanceDescs;
++      args.dst = accel->instances_address;
++      args.header = pDesc->DestAccelerationStructureData;
++      args.header_va = pDesc->DestAccelerationStructureData;
++      args.tlas_id = accel->resource_id;
++      args.fallback_id = device_->AmbreLastBottomLevelID();
++      args.count = in.NumDescs;
++      args.pointers = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS ? 1 : 0;
++      AmbreAccelCompute(pipelines.instances, &args, sizeof(args), in.NumDescs);
++    } else {
++      uint64_t words[1] = {accel->resource_id};
++      AmbreAccelWriteWords(pDesc->DestAccelerationStructureData, words, 1);
++    }
++
++    AmbreAccelBeginPass();
++    auto &cmd = allocator_->EncodeAccelCommand<wmtcmd_accel_build>();
++    cmd.type = WMTAccelCommandBuild;
++    cmd.descriptor = desc;
++    cmd.dst = accel->structure.handle;
++    cmd.src = update ? source->structure.handle : 0;
++    cmd.scratch = scratch;
++    cmd.scratch_offset = scratch_offset;
++    allocator_->InvalidateCurrentPass();
++
++    device_->AmbreSetAccel(pDesc->DestAccelerationStructureData, accel);
++    if (NumPostbuildInfoDescs)
++      AmbreAccelPostbuild(NumPostbuildInfoDescs, pPostbuildInfoDescs, AmbreAccelResultSize(*accel));
++  }
++
++  void STDMETHODCALLTYPE
++  EmitRaytracingAccelerationStructurePostbuildInfo(
++      const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pDesc, UINT SourceCount,
++      const D3D12_GPU_VIRTUAL_ADDRESS *pSources
++  ) {
++    if (!pDesc || !pSources)
++      return;
++    uint64_t stride = 8;
++    switch (pDesc->InfoType) {
++    case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TOOLS_VISUALIZATION:
++      stride = 16;
++      break;
++    case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION:
++      stride = 48;
++      break;
++    default:
++      break;
++    }
++    for (UINT i = 0; i < SourceCount; i++) {
++      auto accel = device_->AmbreGetAccel(pSources[i]);
++      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC one = *pDesc;
++      one.DestBuffer = pDesc->DestBuffer + i * stride;
++      AmbreAccelPostbuild(1, &one, accel ? AmbreAccelResultSize(*accel) : 0);
++    }
++  }
++
++  void STDMETHODCALLTYPE
++  CopyRaytracingAccelerationStructure(
++      D3D12_GPU_VIRTUAL_ADDRESS Dst, D3D12_GPU_VIRTUAL_ADDRESS Src, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode
++  ) {
++    static std::atomic<uint32_t> warned = 0;
++    auto source = device_->AmbreGetAccel(Src);
++    if (!source || !Dst) {
++      if (warned++ < 10)
++        WARN("ambre-dx12: copie d'une structure d'acceleration inconnue");
++      return;
++    }
++    if (Mode == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT && !source->top_level) {
++      // Metal n'a pas besoin de la copie compacte : la structure est partagée.
++      device_->AmbreSetAccel(Dst, source);
++      uint64_t words[1] = {source->resource_id};
++      AmbreAccelWriteWords(Dst, words, 1);
++      return;
++    }
++    if (Mode == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE && !source->top_level) {
++      auto device = device_->GetMTLDevice();
++      auto clone = std::make_shared<AmbreAccelStructure>();
++      clone->structure = device.newAccelerationStructure(source->size);
++      if (!clone->structure)
++        return;
++      clone->resource_id = clone->structure.gpuResourceID();
++      clone->size = source->size;
++      clone->top_level = false;
++      AmbreAccelBeginPass();
++      auto &cmd = allocator_->EncodeAccelCommand<wmtcmd_accel_copy>();
++      cmd.type = WMTAccelCommandCopy;
++      cmd.src = source->structure.handle;
++      cmd.dst = clone->structure.handle;
++      allocator_->InvalidateCurrentPass();
++      uint64_t words[1] = {clone->resource_id};
++      AmbreAccelWriteWords(Dst, words, 1);
++      device_->AmbreSetAccel(Dst, clone);
++      return;
++    }
++    if (warned++ < 10)
++      WARN("ambre-dx12: mode de copie de structure d'acceleration non pris en charge : ", (int)Mode);
++  }
++
++  void STDMETHODCALLTYPE
++  SetProtectedResourceSession(ID3D12ProtectedResourceSession *) {}
++
++  void STDMETHODCALLTYPE
++  BeginRenderPass(
++      UINT, const D3D12_RENDER_PASS_RENDER_TARGET_DESC *, const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC *,
++      D3D12_RENDER_PASS_FLAGS
++  ) {
++    static std::atomic<uint32_t> warned = 0;
++    if (warned++ < 3)
++      WARN("ambre-dx12: BeginRenderPass pas encore pris en charge");
++  }
++
++  void STDMETHODCALLTYPE
++  EndRenderPass() {}
++
++  void STDMETHODCALLTYPE
++  InitializeMetaCommand(ID3D12MetaCommand *, const void *, SIZE_T) {}
++
++  void STDMETHODCALLTYPE
++  ExecuteMetaCommand(ID3D12MetaCommand *, const void *, SIZE_T) {}
++
++  void STDMETHODCALLTYPE
++  SetPipelineState1(ID3D12StateObject *) {
++    static std::atomic<uint32_t> warned = 0;
++    if (warned++ < 3)
++      WARN("ambre-dx12: SetPipelineState1 (ray tracing) pas encore pris en charge");
++  }
++
++  void STDMETHODCALLTYPE
++  DispatchRays(const D3D12_DISPATCH_RAYS_DESC *) {
++    static std::atomic<uint32_t> warned = 0;
++    if (warned++ < 3)
++      WARN("ambre-dx12: DispatchRays pas encore pris en charge");
++  }
+ };
+ 
+ HRESULT STDMETHODCALLTYPE
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index b3c72dc..e8c6c26 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -331,6 +331,15 @@ public:
+           encoder.endEncoding();
+           break;
+         }
++        case EncoderType::Accel: {
++          auto data = static_cast<AccelEncoderData *>(current);
++          auto encoder = cmdbuf.accelerationStructureCommandEncoder();
++          encoder.waitForFence(fence_);
++          encoder.encodeCommands(&data->cmd_head);
++          encoder.updateFence(fence_);
++          encoder.endEncoding();
++          break;
++        }
+         case EncoderType::Resolve: {
+           auto data = static_cast<ResolveEncoderData *>(current);
+ 
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 500a29d..050c4d4 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -31,6 +31,9 @@
+ #include <map>
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
++#include "d3d12_raytracing.hpp"
++#include <deque>
++#include <chrono>
+ 
+ namespace dxmt {
+ 
+@@ -43,6 +46,16 @@ bool AmbreDxilDiagnostic() {
+ }
+ 
+ 
++// Ambre : DirectX Raytracing (AMBRE_DXR=1 : Device5 / liste de commandes 4 exposés ; sinon rien ne
++// change pour les jeux).
++bool AmbreDxrEnabled() {
++  static const bool enabled = [] {
++    auto value = env::getEnvVar("AMBRE_DXR");
++    return !value.empty() && value != "0";
++  }();
++  return enabled;
++}
++
+ const GUID kD3D12DeviceDownlevelUUID = {0x74eaee3f, 0x2f4b, 0x476d, {0x82, 0xba, 0x2b, 0x85, 0xcb, 0x49, 0xe3, 0x10}};
+ 
+ HRESULT PopulateWMTTextureInfo(WMT::Device Device, WMTTextureInfo &InfoOut, const D3D12_RESOURCE_DESC &Desc);
+@@ -62,6 +75,19 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
+   InternalCommandLibrary command_library;
+   FormatCapabilityInspector format_inspector_;
+ 
++  // Ambre : structures d'accélération DXR (adresse GPU du tampon -> structure Metal).
++  dxmt::mutex accel_lock_;
++  std::map<D3D12_GPU_VIRTUAL_ADDRESS, std::shared_ptr<AmbreAccelStructure>> accel_map_;
++  struct AccelGrave {
++    std::shared_ptr<AmbreAccelStructure> accel;
++    std::chrono::steady_clock::time_point when;
++  };
++  // Une structure retirée reste vivante quelques secondes : des commandes en cours peuvent encore
++  // la lire.
++  std::deque<AccelGrave> accel_graveyard_;
++  uint64_t last_bottom_level_id_ = 0;
++  WMT::Reference<WMT::Buffer> dummy_buffer_;
++
+ public:
+   MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {}
+ 
+@@ -119,6 +145,11 @@ public:
+       return S_OK;
+     }
+ 
++    if (riid == __uuidof(ID3D12Device5) && AmbreDxrEnabled()) {
++      *ppvObject = ref(this);
++      return S_OK;
++    }
++
+     if (riid == __uuidof(IDXGIDevice) || riid == __uuidof(IDXGIDevice1) || riid == __uuidof(IDXGIDevice2) ||
+         riid == __uuidof(IDXGIDevice3) || riid == __uuidof(IDXGIDevice4))
+       return E_NOINTERFACE;
+@@ -1343,6 +1374,8 @@ public:
+ 
+   HRESULT
+   UnregisterResidencyAndVA(BufferAllocation *allocation) {
++    // Ambre : les structures d'accélération DXR de ce tampon disparaissent avec lui.
++    AmbreDropAccelRange(allocation->gpuAddress(), allocation->gpuAddress() + allocation->byteLength());
+     std::unique_lock<dxmt::mutex> lock(residency_lock_);
+     // Ambre : retirer seulement cette allocation (pas les autres tampons à la même adresse).
+     auto [first, last] = interval_map_.equal_range(allocation->gpuAddress());
+@@ -1360,6 +1393,169 @@ public:
+     return S_OK;
+   }
+ 
++  // Ambre : retire les structures d'accélération dont l'adresse est dans [first, last).
++  void
++  AmbreDropAccelRange(D3D12_GPU_VIRTUAL_ADDRESS first, D3D12_GPU_VIRTUAL_ADDRESS last) {
++    std::unique_lock<dxmt::mutex> lock(accel_lock_);
++    if (accel_map_.empty())
++      return;
++    auto now = std::chrono::steady_clock::now();
++    for (auto it = accel_map_.lower_bound(first); it != accel_map_.end() && it->first < last;) {
++      accel_graveyard_.push_back({it->second, now});
++      it = accel_map_.erase(it);
++    }
++    AmbreAccelPurgeLocked(now);
++  }
++
++  void
++  AmbreAccelPurgeLocked(std::chrono::steady_clock::time_point now) {
++    while (!accel_graveyard_.empty() && now - accel_graveyard_.front().when > std::chrono::seconds(4)) {
++      auto &entry = accel_graveyard_.front();
++      // Une structure encore référencée ailleurs (alias) garde sa place dans l'ensemble résident.
++      if (entry.accel.use_count() == 1 && entry.accel->structure) {
++        WMT::Allocation allocation{entry.accel->structure.handle};
++        UnregisterResidency(allocation);
++      }
++      accel_graveyard_.pop_front();
++    }
++  }
++
++  std::shared_ptr<AmbreAccelStructure>
++  AmbreGetAccel(D3D12_GPU_VIRTUAL_ADDRESS VA) {
++    std::unique_lock<dxmt::mutex> lock(accel_lock_);
++    auto it = accel_map_.find(VA);
++    return it == accel_map_.end() ? nullptr : it->second;
++  }
++
++  void
++  AmbreSetAccel(D3D12_GPU_VIRTUAL_ADDRESS VA, std::shared_ptr<AmbreAccelStructure> Accel) {
++    if (!Accel)
++      return;
++    WMT::Allocation allocation{Accel->structure.handle};
++    RegisterResidency(allocation);
++    std::unique_lock<dxmt::mutex> lock(accel_lock_);
++    auto now = std::chrono::steady_clock::now();
++    auto it = accel_map_.find(VA);
++    if (it != accel_map_.end()) {
++      if (it->second != Accel)
++        accel_graveyard_.push_back({it->second, now});
++      it->second = Accel;
++    } else {
++      accel_map_.emplace(VA, Accel);
++    }
++    if (!Accel->top_level)
++      last_bottom_level_id_ = Accel->resource_id;
++    AmbreAccelPurgeLocked(now);
++  }
++
++  uint64_t
++  AmbreLastBottomLevelID() {
++    std::unique_lock<dxmt::mutex> lock(accel_lock_);
++    return last_bottom_level_id_;
++  }
++
++  WMT::Buffer
++  AmbreDummyBuffer() {
++    std::unique_lock<dxmt::mutex> lock(accel_lock_);
++    if (!dummy_buffer_) {
++      WMTBufferInfo info;
++      info.memory.set(nullptr);
++      info.length = 65536;
++      info.options = WMTResourceStorageModeShared;
++      info.gpu_address = 0;
++      dummy_buffer_ = GetMTLDevice().newBuffer(info);
++    }
++    return dummy_buffer_;
++  }
++
++  // Ambre : IDs3D12Device5 — DXR. Seules les structures d'accélération existent pour l'instant.
++  HRESULT STDMETHODCALLTYPE
++  CreateLifetimeTracker(ID3D12LifetimeOwner *, REFIID, void **) {
++    return E_NOTIMPL;
++  }
++
++  void STDMETHODCALLTYPE
++  RemoveDevice() {}
++
++  HRESULT STDMETHODCALLTYPE
++  EnumerateMetaCommands(UINT *pCount, D3D12_META_COMMAND_DESC *) {
++    if (pCount)
++      *pCount = 0;
++    return S_OK;
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  EnumerateMetaCommandParameters(
++      REFGUID, D3D12_META_COMMAND_PARAMETER_STAGE, UINT *, UINT *, D3D12_META_COMMAND_PARAMETER_DESC *
++  ) {
++    return E_INVALIDARG;
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  CreateMetaCommand(REFGUID, UINT, const void *, SIZE_T, REFIID, void **) {
++    return E_INVALIDARG;
++  }
++
++  HRESULT STDMETHODCALLTYPE
++  CreateStateObject(const D3D12_STATE_OBJECT_DESC *, REFIID, void **) {
++    WARN("ambre-dx12: CreateStateObject (pipelines de ray tracing) pas encore pris en charge");
++    return E_NOTIMPL;
++  }
++
++  void STDMETHODCALLTYPE
++  GetRaytracingAccelerationStructurePrebuildInfo(
++      const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *pDesc,
++      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *pInfo
++  ) {
++    if (!pInfo)
++      return;
++    memset(pInfo, 0, sizeof(*pInfo));
++    if (!pDesc)
++      return;
++    auto dummy = AmbreDummyBuffer().handle;
++    auto resolve = [&](D3D12_GPU_VIRTUAL_ADDRESS, uint64_t *offset) -> obj_handle_t {
++      *offset = 0;
++      return dummy;
++    };
++    WMTAccelDescriptor desc;
++    memset(&desc, 0, sizeof(desc));
++    desc.usage = AmbreAccelUsage(pDesc->Flags);
++    std::vector<WMTAccelGeometry> geometries;
++    bool top = pDesc->Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
++    WMTAccelSizes sizes = {};
++    if (top) {
++      desc.kind = 1;
++      desc.instance_count = pDesc->NumDescs;
++      desc.instance_buffer = dummy;
++      if (pDesc->NumDescs)
++        sizes = GetMTLDevice().accelerationStructureSizes(desc);
++    } else {
++      geometries.resize(pDesc->NumDescs);
++      unsigned valid = 0;
++      for (unsigned i = 0; i < pDesc->NumDescs; i++) {
++        const D3D12_RAYTRACING_GEOMETRY_DESC *g = pDesc->DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY
++                                                      ? &pDesc->pGeometryDescs[i]
++                                                      : pDesc->ppGeometryDescs[i];
++        if (g && AmbreFillGeometry(*g, geometries[valid], resolve))
++          valid++;
++      }
++      desc.geometry_count = valid;
++      desc.geometries.set(geometries.data());
++      if (valid)
++        sizes = GetMTLDevice().accelerationStructureSizes(desc);
++    }
++    pInfo->ResultDataMaxSizeInBytes =
++        AmbreAccelAlign256(top ? kAmbreAccelHeaderSize + 4ull * pDesc->NumDescs : kAmbreAccelHeaderSize);
++    pInfo->ScratchDataSizeInBytes = AmbreAccelAlign256(sizes.build_scratch_size < 16 ? 16 : sizes.build_scratch_size);
++    pInfo->UpdateScratchDataSizeInBytes =
++        AmbreAccelAlign256(sizes.refit_scratch_size < 16 ? 16 : sizes.refit_scratch_size);
++  }
++
++  D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS STDMETHODCALLTYPE
++  CheckDriverMatchingIdentifier(D3D12_SERIALIZED_DATA_TYPE, const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *) {
++    return D3D12_DRIVER_MATCHING_IDENTIFIER_UNSUPPORTED_TYPE;
++  }
++
+   BufferAllocation *
+   LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset) {
+     std::unique_lock<dxmt::mutex> lock(residency_lock_);
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 57fd4ca..24f460d 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -17,6 +17,9 @@
+  */
+ 
+ #pragma once
++
++#include <memory>
++#include <vector>
+ #include <atomic>
+ #include "d3d12.h"
+ #include "d3d12_command_encoder.hpp"
+@@ -41,7 +44,7 @@
+ 
+ namespace dxmt {
+ 
+-class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList2 {
++class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList4 {
+ public:
+   EncoderData *entry;
+   size_t encoder_count;
+@@ -215,7 +218,23 @@ public:
+   virtual void ReleasePrivate() = 0;
+ };
+ 
+-class MTLD3D12Device : public ID3D12Device4 {
++// Ambre : structure d'accélération DXR émulée avec Metal (niveau bas ou niveau haut). Le tampon
++// que l'application fournit ne contient qu'un petit en-tête (identifiant Metal de la structure ;
++// pour un niveau haut, au format du convertisseur d'Apple, plus le tableau des contributions).
++struct AmbreAccelStructure {
++  WMT::Reference<WMT::AccelerationStructure> structure;
++  uint64_t resource_id = 0;
++  uint64_t size = 0; // taille Metal de la structure
++  bool top_level = false;
++  // Niveau haut : instances converties au format Metal (72 octets chacune).
++  WMT::Reference<WMT::Buffer> instances;
++  uint64_t instances_address = 0;
++  uint32_t instance_capacity = 0;
++  // Anciens tampons d'instances (agrandissement) : gardés, des commandes peuvent encore les lire.
++  std::vector<WMT::Reference<WMT::Buffer>> retired;
++};
++
++class MTLD3D12Device : public ID3D12Device5 {
+ public:
+   virtual WMT::Device GetMTLDevice() = 0;
+ 
+@@ -237,6 +256,14 @@ public:
+ 
+   virtual InternalCommandLibrary& GetLib() = 0;
+ 
++  // Ambre : structures d'accélération DXR, retrouvées par l'adresse GPU de leur tampon.
++  virtual std::shared_ptr<AmbreAccelStructure> AmbreGetAccel(D3D12_GPU_VIRTUAL_ADDRESS VA) = 0;
++  virtual void AmbreSetAccel(D3D12_GPU_VIRTUAL_ADDRESS VA, std::shared_ptr<AmbreAccelStructure> Accel) = 0;
++  // Identifiant Metal du dernier niveau bas construit (instances inactives : on ne peut pas viser 0).
++  virtual uint64_t AmbreLastBottomLevelID() = 0;
++  // Petit tampon valide pour les questions de taille (sans donnees reelles).
++  virtual WMT::Buffer AmbreDummyBuffer() = 0;
++
+   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
+ 
+   EventListener event_listener;
+diff --git a/src/d3d12/d3d12_raytracing.hpp b/src/d3d12/d3d12_raytracing.hpp
+new file mode 100644
+index 0000000..3172ed5
+--- /dev/null
++++ b/src/d3d12/d3d12_raytracing.hpp
+@@ -0,0 +1,81 @@
++/*
++ * Ambre : DirectX Raytracing sur Metal (correctif 0032, structures d'accélération).
++ *
++ * Fonctions communes à la question de taille du périphérique (GetRaytracingAccelerationStructure
++ * PrebuildInfo) et à la construction (BuildRaytracingAccelerationStructure).
++ *
++ * Ce fichier suit la licence de DXMT (LGPL 2.1).
++ */
++
++#pragma once
++
++#include "d3d12_device.hpp"
++#include <cstring>
++
++namespace dxmt {
++
++// AMBRE_DXR=1 : ray tracing exposé aux jeux (essais ; défini dans d3d12_device.cpp).
++bool AmbreDxrEnabled();
++
++// Tailles de l'en-tête écrit dans le tampon de l'application (un niveau haut y tient avec le tableau
++// des contributions d'instances) : voir IRRaytracingAccelerationStructureGPUHeader du convertisseur.
++constexpr uint64_t kAmbreAccelHeaderSize = 64;
++
++inline uint64_t
++AmbreAccelAlign256(uint64_t value) {
++  return (value + 255) & ~uint64_t(255);
++}
++
++inline uint32_t
++AmbreAccelUsage(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS flags) {
++  uint32_t usage = 0;
++  if (flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE)
++    usage |= 1;
++  if (flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD)
++    usage |= 2;
++  return usage;
++}
++
++// Remplit une géométrie Metal à partir d'une géométrie DXR. `resolve(VA, &offset)` rend le tampon
++// Metal qui contient l'adresse (0 s'il est introuvable).
++template <typename Resolve>
++inline bool
++AmbreFillGeometry(const D3D12_RAYTRACING_GEOMETRY_DESC &d, WMTAccelGeometry &g, Resolve &&resolve) {
++  memset(&g, 0, sizeof(g));
++  g.opaque = (d.Flags & D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE) ? 1 : 0;
++  g.no_duplicate_any_hit = (d.Flags & D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION) ? 1 : 0;
++  uint64_t offset = 0;
++  if (d.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS) {
++    g.kind = 1;
++    g.primitive_count = (uint32_t)d.AABBs.AABBCount;
++    g.box_stride = (uint32_t)d.AABBs.AABBs.StrideInBytes;
++    g.box_buffer = resolve(d.AABBs.AABBs.StartAddress, &offset);
++    g.box_offset = offset;
++    return g.box_buffer != 0 && g.primitive_count != 0;
++  }
++  const auto &t = d.Triangles;
++  g.kind = 0;
++  g.vertex_format = (uint32_t)t.VertexFormat;
++  g.vertex_stride = (uint32_t)t.VertexBuffer.StrideInBytes;
++  g.vertex_buffer = resolve(t.VertexBuffer.StartAddress, &offset);
++  g.vertex_offset = offset;
++  if (t.IndexFormat == DXGI_FORMAT_R16_UINT || t.IndexFormat == DXGI_FORMAT_R32_UINT) {
++    g.index_type = t.IndexFormat == DXGI_FORMAT_R16_UINT ? 1 : 2;
++    g.primitive_count = t.IndexCount / 3;
++    offset = 0;
++    g.index_buffer = resolve(t.IndexBuffer, &offset);
++    g.index_offset = offset;
++    if (!g.index_buffer)
++      return false;
++  } else {
++    g.primitive_count = t.VertexCount / 3;
++  }
++  if (t.Transform3x4) {
++    offset = 0;
++    g.transform_buffer = resolve(t.Transform3x4, &offset);
++    g.transform_offset = offset;
++  }
++  return g.vertex_buffer != 0 && g.primitive_count != 0;
++}
++
++} // namespace dxmt
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 2eb6fef..abc28c7 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -220,6 +220,15 @@ class Resource : public Allocation {
+ public:
+ };
+ 
++// Ambre : structure d'accélération (ray tracing).
++class AccelerationStructure : public Resource {
++public:
++  uint64_t
++  gpuResourceID() {
++    return MTLAccelerationStructure_gpuResourceID(handle);
++  }
++};
++
+ class Texture : public Resource {
+ public:
+   Reference<Texture>
+@@ -558,6 +567,33 @@ public:
+   }
+ };
+ 
++// Ambre : encodeur de structures d'accélération (ray tracing).
++class AccelerationStructureCommandEncoder : public CommandEncoder {
++public:
++  void
++  encodeCommands(const wmtcmd_accel_nop *cmd_head) {
++    MTLAccelerationStructureCommandEncoder_encodeCommands(handle, (const wmtcmd_base *)cmd_head);
++  }
++
++  void
++  waitForFence(Fence fence) {
++    struct wmtcmd_accel_fence_op cmd;
++    cmd.type = WMTAccelCommandWaitForFence;
++    cmd.next.set(nullptr);
++    cmd.fence = fence.handle;
++    MTLAccelerationStructureCommandEncoder_encodeCommands(handle, (const wmtcmd_base *)&cmd);
++  }
++
++  void
++  updateFence(Fence fence) {
++    struct wmtcmd_accel_fence_op cmd;
++    cmd.type = WMTAccelCommandUpdateFence;
++    cmd.next.set(nullptr);
++    cmd.fence = fence.handle;
++    MTLAccelerationStructureCommandEncoder_encodeCommands(handle, (const wmtcmd_base *)&cmd);
++  }
++};
++
+ class MetalDrawable : public Object {
+ public:
+   Texture
+@@ -689,6 +725,11 @@ public:
+     return BlitCommandEncoder{MTLCommandBuffer_blitCommandEncoder(handle)};
+   }
+ 
++  AccelerationStructureCommandEncoder
++  accelerationStructureCommandEncoder() {
++    return AccelerationStructureCommandEncoder{MTLCommandBuffer_accelerationStructureCommandEncoder(handle)};
++  }
++
+   BlitCommandEncoder
+   blitCommandEncoderWithSampleBuffers(WMTSampleBufferAttachmentInfo *attachments, uint64_t num_attachments) {
+     return BlitCommandEncoder{MTLCommandBuffer_blitCommandEncoderWithSampleBuffers(handle, attachments, num_attachments)};
+@@ -809,6 +850,18 @@ public:
+     return Reference<Buffer>(MTLDevice_newBuffer(handle, &info));
+   }
+ 
++  WMTAccelSizes
++  accelerationStructureSizes(const WMTAccelDescriptor &descriptor) {
++    WMTAccelSizes sizes;
++    MTLDevice_accelerationStructureSizes(handle, &descriptor, &sizes);
++    return sizes;
++  }
++
++  Reference<AccelerationStructure>
++  newAccelerationStructure(uint64_t size) {
++    return Reference<AccelerationStructure>(MTLDevice_newAccelerationStructure(handle, size));
++  }
++
+   Reference<SamplerState>
+   newSamplerState(WMTSamplerInfo &info) {
+     return Reference<SamplerState>(MTLDevice_newSamplerState(handle, &info));
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 7d748d9..e7713c2 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -3627,6 +3627,193 @@ _MTLDevice_newGeometryEmulationPipeline(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Ambre : structures d'accélération (DirectX Raytracing). */
++static MTLAttributeFormat
++ambre_accel_vertex_format(uint32_t dxgi) {
++  switch (dxgi) {
++  case 6: /* R32G32B32_FLOAT */
++    return MTLAttributeFormatFloat3;
++  case 16: /* R32G32_FLOAT */
++    return MTLAttributeFormatFloat2;
++  case 10: /* R16G16B16A16_FLOAT */
++    return MTLAttributeFormatHalf4;
++  case 34: /* R16G16_FLOAT */
++    return MTLAttributeFormatHalf2;
++  case 13: /* R16G16B16A16_SNORM */
++    return MTLAttributeFormatShort4Normalized;
++  case 37: /* R16G16_SNORM */
++    return MTLAttributeFormatShort2Normalized;
++  case 11: /* R16G16B16A16_UNORM */
++    return MTLAttributeFormatUShort4Normalized;
++  case 35: /* R16G16_UNORM */
++    return MTLAttributeFormatUShort2Normalized;
++  case 28: /* R8G8B8A8_UNORM */
++    return MTLAttributeFormatUChar4Normalized;
++  case 31: /* R8G8B8A8_SNORM */
++    return MTLAttributeFormatChar4Normalized;
++  case 49: /* R8G8_UNORM */
++    return MTLAttributeFormatUChar2Normalized;
++  case 51: /* R8G8_SNORM */
++    return MTLAttributeFormatChar2Normalized;
++  case 24: /* R10G10B10A2_UNORM */
++    return MTLAttributeFormatUInt1010102Normalized;
++  default:
++    return MTLAttributeFormatFloat3;
++  }
++}
++
++static MTLAccelerationStructureDescriptor *
++ambre_accel_descriptor(const struct WMTAccelDescriptor *desc) {
++  MTLAccelerationStructureUsage usage = MTLAccelerationStructureUsageNone;
++  if (desc->usage & 1)
++    usage |= MTLAccelerationStructureUsageRefit;
++  if (desc->usage & 2)
++    usage |= MTLAccelerationStructureUsagePreferFastBuild;
++  if (desc->kind == 1) {
++    MTLInstanceAccelerationStructureDescriptor *instance = [MTLInstanceAccelerationStructureDescriptor descriptor];
++    instance.instanceDescriptorType = MTLAccelerationStructureInstanceDescriptorTypeIndirect;
++    instance.instanceCount = desc->instance_count;
++    instance.instanceDescriptorBuffer = (id<MTLBuffer>)desc->instance_buffer;
++    instance.instanceDescriptorBufferOffset = desc->instance_offset;
++    instance.instanceDescriptorStride = WMT_ACCEL_INSTANCE_STRIDE;
++    instance.usage = usage;
++    return instance;
++  }
++  MTLPrimitiveAccelerationStructureDescriptor *primitive = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
++  NSMutableArray<MTLAccelerationStructureGeometryDescriptor *> *geometries = [NSMutableArray array];
++  const struct WMTAccelGeometry *items = desc->geometries.ptr;
++  for (uint32_t i = 0; i < desc->geometry_count; i++) {
++    const struct WMTAccelGeometry *g = &items[i];
++    MTLAccelerationStructureGeometryDescriptor *base = nil;
++    if (g->kind == 1) {
++      MTLAccelerationStructureBoundingBoxGeometryDescriptor *box =
++          [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
++      box.boundingBoxBuffer = (id<MTLBuffer>)g->box_buffer;
++      box.boundingBoxBufferOffset = g->box_offset;
++      box.boundingBoxStride = g->box_stride ? g->box_stride : 24;
++      box.boundingBoxCount = g->primitive_count;
++      base = box;
++    } else {
++      MTLAccelerationStructureTriangleGeometryDescriptor *triangles =
++          [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
++      triangles.vertexBuffer = (id<MTLBuffer>)g->vertex_buffer;
++      triangles.vertexBufferOffset = g->vertex_offset;
++      triangles.vertexStride = g->vertex_stride;
++      triangles.vertexFormat = ambre_accel_vertex_format(g->vertex_format);
++      if (g->index_type) {
++        triangles.indexBuffer = (id<MTLBuffer>)g->index_buffer;
++        triangles.indexBufferOffset = g->index_offset;
++        triangles.indexType = g->index_type == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
++      }
++      triangles.triangleCount = g->primitive_count;
++      if (g->transform_buffer) {
++        triangles.transformationMatrixBuffer = (id<MTLBuffer>)g->transform_buffer;
++        triangles.transformationMatrixBufferOffset = g->transform_offset;
++        if (@available(macOS 15.0, *))
++          triangles.transformationMatrixLayout = MTLMatrixLayoutRowMajor;
++      }
++      base = triangles;
++    }
++    base.opaque = g->opaque ? YES : NO;
++    base.allowDuplicateIntersectionFunctionInvocation = g->no_duplicate_any_hit ? NO : YES;
++    base.intersectionFunctionTableOffset = g->intersection_offset;
++    [geometries addObject:base];
++  }
++  primitive.geometryDescriptors = geometries;
++  primitive.usage = usage;
++  return primitive;
++}
++
++static NTSTATUS
++_MTLDevice_accelerationStructureSizes(void *obj) {
++  struct unixcall_mtldevice_accelsizes *params = obj;
++  const struct WMTAccelDescriptor *desc = params->descriptor.ptr;
++  struct WMTAccelSizes *out = params->sizes.ptr;
++  @autoreleasepool {
++    MTLAccelerationStructureSizes sizes =
++        [(id<MTLDevice>)params->device accelerationStructureSizesWithDescriptor:ambre_accel_descriptor(desc)];
++    out->structure_size = sizes.accelerationStructureSize;
++    out->build_scratch_size = sizes.buildScratchBufferSize;
++    out->refit_scratch_size = sizes.refitScratchBufferSize;
++  }
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLDevice_newAccelerationStructure(void *obj) {
++  struct unixcall_generic_obj_uint64_obj_ret *params = obj;
++  params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newAccelerationStructureWithSize:params->arg];
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLAccelerationStructure_gpuResourceID(void *obj) {
++  struct unixcall_generic_obj_uint64_ret *params = obj;
++  MTLResourceID resource_id = [(id<MTLAccelerationStructure>)params->handle gpuResourceID];
++  params->ret = *(uint64_t *)&resource_id;
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLCommandBuffer_accelerationStructureCommandEncoder(void *obj) {
++  struct unixcall_generic_obj_obj_ret *params = obj;
++  params->ret = (obj_handle_t)[(id<MTLCommandBuffer>)params->handle accelerationStructureCommandEncoder];
++  return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++_MTLAccelerationStructureCommandEncoder_encodeCommands(void *obj) {
++  struct unixcall_generic_obj_cmd_noret *params = obj;
++  const struct wmtcmd_base *next = params->cmd_head.ptr;
++  id<MTLAccelerationStructureCommandEncoder> encoder = (id<MTLAccelerationStructureCommandEncoder>)params->encoder;
++  while (next) {
++    switch ((enum WMTAccelCommandType)next->type) {
++    default:
++      assert(!next->type && "unhandled acceleration structure command type");
++      break;
++    case WMTAccelCommandBuild: {
++      struct wmtcmd_accel_build *body = (struct wmtcmd_accel_build *)next;
++      @autoreleasepool {
++        MTLAccelerationStructureDescriptor *descriptor = ambre_accel_descriptor(&body->descriptor);
++        if (body->src) {
++          id<MTLAccelerationStructure> source = (id<MTLAccelerationStructure>)body->src;
++          id<MTLAccelerationStructure> destination = (id<MTLAccelerationStructure>)body->dst;
++          [encoder refitAccelerationStructure:source
++                                   descriptor:descriptor
++                                  destination:(destination == source ? nil : destination)
++                                scratchBuffer:(id<MTLBuffer>)body->scratch
++                          scratchBufferOffset:body->scratch_offset];
++        } else {
++          [encoder buildAccelerationStructure:(id<MTLAccelerationStructure>)body->dst
++                                   descriptor:descriptor
++                                scratchBuffer:(id<MTLBuffer>)body->scratch
++                          scratchBufferOffset:body->scratch_offset];
++        }
++      }
++      break;
++    }
++    case WMTAccelCommandCopy: {
++      struct wmtcmd_accel_copy *body = (struct wmtcmd_accel_copy *)next;
++      [encoder copyAccelerationStructure:(id<MTLAccelerationStructure>)body->src
++                 toAccelerationStructure:(id<MTLAccelerationStructure>)body->dst];
++      break;
++    }
++    case WMTAccelCommandWaitForFence: {
++      struct wmtcmd_accel_fence_op *body = (struct wmtcmd_accel_fence_op *)next;
++      [encoder waitForFence:(id<MTLFence>)body->fence];
++      break;
++    }
++    case WMTAccelCommandUpdateFence: {
++      struct wmtcmd_accel_fence_op *body = (struct wmtcmd_accel_fence_op *)next;
++      [encoder updateFence:(id<MTLFence>)body->fence];
++      break;
++    }
++    }
++    next = next->next.ptr;
++  }
++  return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ _IRConverter_unsupported(void *obj) {
+   return (NTSTATUS)0xC0000002; /* STATUS_NOT_IMPLEMENTED */
+@@ -3782,6 +3969,11 @@ const void *__wine_unix_call_funcs[] = {
+     &_IRConverter_newLibrary,
+     &_IRConverter_newLibrary2,
+     &_MTLDevice_newGeometryEmulationPipeline,
++    &_MTLDevice_accelerationStructureSizes,
++    &_MTLDevice_newAccelerationStructure,
++    &_MTLAccelerationStructure_gpuResourceID,
++    &_MTLCommandBuffer_accelerationStructureCommandEncoder,
++    &_MTLAccelerationStructureCommandEncoder_encodeCommands,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -3935,5 +4127,10 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index d39935c..dda3283 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -2283,4 +2283,97 @@ WINEMETAL_API void MTLTexture_getBytes(
+     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
+ );
+ 
++/* Ambre : structures d'accélération (DirectX Raytracing -> Metal). Une géométrie est décrite
++   avec des tampons et des décalages déjà résolus ; vertex_format est un DXGI_FORMAT. */
++struct WMTAccelGeometry {
++  uint32_t kind;                 /* 0 : triangles, 1 : boîtes englobantes */
++  uint32_t opaque;               /* 1 : sans shader de touche */
++  uint32_t no_duplicate_any_hit; /* 1 : une seule invocation du shader de touche */
++  uint32_t vertex_format;        /* DXGI_FORMAT des positions */
++  uint32_t vertex_stride;
++  uint32_t index_type;           /* 0 : aucun, 1 : 16 bits, 2 : 32 bits */
++  uint32_t primitive_count;      /* triangles ou boîtes */
++  uint32_t intersection_offset;
++  obj_handle_t vertex_buffer;
++  uint64_t vertex_offset;
++  obj_handle_t index_buffer;
++  uint64_t index_offset;
++  obj_handle_t transform_buffer; /* matrice 3x4 ligne par ligne, ou 0 */
++  uint64_t transform_offset;
++  obj_handle_t box_buffer;
++  uint64_t box_offset;
++  uint32_t box_stride;
++  uint32_t padding;
++};
++
++struct WMTAccelDescriptor {
++  uint32_t kind;  /* 0 : primitives (niveau bas), 1 : instances (niveau haut) */
++  uint32_t usage; /* bit 0 : mise à jour possible, bit 1 : construction rapide */
++  uint32_t geometry_count;
++  uint32_t instance_count;
++  struct WMTConstMemoryPointer geometries; /* struct WMTAccelGeometry[geometry_count] */
++  obj_handle_t instance_buffer;            /* MTLIndirectAccelerationStructureInstanceDescriptor[] */
++  uint64_t instance_offset;
++};
++
++struct WMTAccelSizes {
++  uint64_t structure_size;
++  uint64_t build_scratch_size;
++  uint64_t refit_scratch_size;
++};
++
++#define WMT_ACCEL_INSTANCE_STRIDE 72
++
++WINEMETAL_API void MTLDevice_accelerationStructureSizes(
++    obj_handle_t device, const struct WMTAccelDescriptor *descriptor, struct WMTAccelSizes *sizes
++);
++WINEMETAL_API obj_handle_t MTLDevice_newAccelerationStructure(obj_handle_t device, uint64_t size);
++WINEMETAL_API uint64_t MTLAccelerationStructure_gpuResourceID(obj_handle_t structure);
++WINEMETAL_API obj_handle_t MTLCommandBuffer_accelerationStructureCommandEncoder(obj_handle_t cmdbuf);
++
++enum WMTAccelCommandType : uint16_t {
++  WMTAccelCommandNop,
++  WMTAccelCommandBuild,
++  WMTAccelCommandCopy,
++  WMTAccelCommandWaitForFence,
++  WMTAccelCommandUpdateFence,
++};
++
++struct wmtcmd_accel_nop {
++  enum WMTAccelCommandType type;
++  uint16_t reserved[3];
++  struct WMTMemoryPointer next;
++};
++
++struct wmtcmd_accel_build {
++  enum WMTAccelCommandType type;
++  uint16_t reserved[3];
++  struct WMTMemoryPointer next;
++  struct WMTAccelDescriptor descriptor;
++  obj_handle_t dst;
++  obj_handle_t src; /* mise à jour (refit) : structure source ; 0 : construction */
++  obj_handle_t scratch;
++  uint64_t scratch_offset;
++};
++
++struct wmtcmd_accel_copy {
++  enum WMTAccelCommandType type;
++  uint16_t reserved[3];
++  struct WMTMemoryPointer next;
++  obj_handle_t src;
++  obj_handle_t dst;
++};
++
++struct wmtcmd_accel_fence_op {
++  enum WMTAccelCommandType type;
++  uint16_t reserved[3];
++  struct WMTMemoryPointer next;
++  obj_handle_t fence;
++};
++
++WINEMETAL_API void MTLAccelerationStructureCommandEncoder_encodeCommands(
++    obj_handle_t encoder, const struct wmtcmd_base *cmd_head
++);
++
++
+ #endif
+\ No newline at end of file
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index 3d795e6..f205699 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1390,3 +1390,53 @@ MTLDevice_newGeometryEmulationPipeline(
+     *err_out = params.ret_error;
+   return params.ret_pso;
+ }
++
++WINEMETAL_API void
++MTLDevice_accelerationStructureSizes(
++    obj_handle_t device, const struct WMTAccelDescriptor *descriptor, struct WMTAccelSizes *sizes
++) {
++  struct unixcall_mtldevice_accelsizes params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.descriptor, descriptor);
++  WMT_MEMPTR_SET(params.sizes, sizes);
++  sizes->structure_size = 0;
++  sizes->build_scratch_size = 0;
++  sizes->refit_scratch_size = 0;
++  UNIX_CALL(149, &params);
++}
++
++WINEMETAL_API obj_handle_t
++MTLDevice_newAccelerationStructure(obj_handle_t device, uint64_t size) {
++  struct unixcall_generic_obj_uint64_obj_ret params;
++  params.handle = device;
++  params.arg = size;
++  params.ret = 0;
++  UNIX_CALL(150, &params);
++  return params.ret;
++}
++
++WINEMETAL_API uint64_t
++MTLAccelerationStructure_gpuResourceID(obj_handle_t structure) {
++  struct unixcall_generic_obj_uint64_ret params;
++  params.handle = structure;
++  params.ret = 0;
++  UNIX_CALL(151, &params);
++  return params.ret;
++}
++
++WINEMETAL_API obj_handle_t
++MTLCommandBuffer_accelerationStructureCommandEncoder(obj_handle_t cmdbuf) {
++  struct unixcall_generic_obj_obj_ret params;
++  params.handle = cmdbuf;
++  params.ret = 0;
++  UNIX_CALL(152, &params);
++  return params.ret;
++}
++
++WINEMETAL_API void
++MTLAccelerationStructureCommandEncoder_encodeCommands(obj_handle_t encoder, const struct wmtcmd_base *cmd_head) {
++  struct unixcall_generic_obj_cmd_noret params;
++  params.encoder = encoder;
++  WMT_MEMPTR_SET(params.cmd_head, cmd_head);
++  UNIX_CALL(153, &params);
++}
+diff --git a/src/winemetal/winemetal_thunks.h b/src/winemetal/winemetal_thunks.h
+index 5cf2975..8b223ae 100644
+--- a/src/winemetal/winemetal_thunks.h
++++ b/src/winemetal/winemetal_thunks.h
+@@ -461,6 +461,12 @@ struct unixcall_mtldevice_newgeometrypso {
+   obj_handle_t ret_error;
+ };
+ 
++struct unixcall_mtldevice_accelsizes {
++  obj_handle_t device;
++  struct WMTConstMemoryPointer descriptor;
++  struct WMTMemoryPointer sizes;
++};
++
+ #pragma pack(pop)
+ 
+ #endif

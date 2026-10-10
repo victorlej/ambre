@@ -121,6 +121,16 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0031 retire les diagnostics 0026, 0029 et 0030 (lignes « ambre-perf: » et « ambre-heap: ») ; garde le
      recouvrement des passes de 0027. Allocateur transitoire d'Unreal : interblocage au démarrage, pas
      encore résolu (Allia pose r.RDG.TransientAllocator=0 pour Clair Obscur).
+0032 DirectX Raytracing, étape 2 : structures d'accélération (niveau bas et niveau haut) sur Metal.
+     winemetal : MTLDevice_accelerationStructureSizes / newAccelerationStructure,
+     MTLAccelerationStructure_gpuResourceID, encodeur de structures d'accélération (construction,
+     mise à jour, copie) ; d3d12 : ID3D12Device5 (GetRaytracingAccelerationStructurePrebuildInfo ;
+     le reste en attente) et ID3D12GraphicsCommandList4 (BuildRaytracingAccelerationStructure,
+     Emit...PostbuildInfo, Copy... CLONE / COMPACT ; DispatchRays et SetPipelineState1 en attente).
+     Le tampon de l'application ne garde qu'un en-tête (identifiant Metal, au format du
+     convertisseur d'Apple) ; les instances du niveau haut sont converties sur la carte graphique
+     (noyau interne) en instances Metal « indirectes ». Exposé aux jeux seulement avec AMBRE_DXR=1
+     (le niveau de ray tracing n'est pas annoncé : rien ne change pour les jeux).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
