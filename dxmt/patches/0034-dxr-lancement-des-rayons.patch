@@ -1,0 +1,210 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 923c92b..1920a3a 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -252,7 +252,7 @@ kernel void ambre_accel_instances(uint tid [[thread_position_in_grid]], constant
+     mask = 0;
+   }
+   device uint *o32 = (device uint *)(a.dst + ulong(tid) * 72 + 48);
+-  o32[0] = w1 >> 24;
++  o32[0] = ((w1 >> 24) | 4u) & ~8u; // opaque : pas de shaders any-hit pour l'instant
+   o32[1] = mask;
+   o32[2] = 0;
+   o32[3] = w0 & 0xFFFFFFu;
+@@ -359,6 +359,8 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
+   uint64_t rootarg_graphics_staging_[64];
+ 
+   Com<MTLD3D12ComputePipelineState, false> pso_compute_;
++  // Ambre : objet d'état de ray tracing courant (SetPipelineState1).
++  Com<MTLD3D12RTStateObject, false> rt_state_;
+   Com<MTLD3D12RootSignature, false> rootsig_compute_;
+   uint64_t rootarg_compute_staging_[64];
+ 
+@@ -2660,17 +2662,76 @@ public:
+   ExecuteMetaCommand(ID3D12MetaCommand *, const void *, SIZE_T) {}
+ 
+   void STDMETHODCALLTYPE
+-  SetPipelineState1(ID3D12StateObject *) {
+-    static std::atomic<uint32_t> warned = 0;
+-    if (warned++ < 3)
+-      WARN("ambre-dx12: SetPipelineState1 (ray tracing) pas encore pris en charge");
++  SetPipelineState1(ID3D12StateObject *pStateObject) {
++    rt_state_ = static_cast<MTLD3D12RTStateObject *>(pStateObject);
+   }
+ 
+   void STDMETHODCALLTYPE
+-  DispatchRays(const D3D12_DISPATCH_RAYS_DESC *) {
++  DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) {
+     static std::atomic<uint32_t> warned = 0;
+-    if (warned++ < 3)
+-      WARN("ambre-dx12: DispatchRays pas encore pris en charge");
++    if (!pDesc || !rt_state_ || !rt_state_->pso || !pDesc->Width || !pDesc->Height || !pDesc->Depth) {
++      if (warned++ < 5)
++        WARN("ambre-dx12: DispatchRays sans objet d'etat ou dimensions nulles : saute");
++      return;
++    }
++    if (!pDesc->RayGenerationShaderRecord.StartAddress) {
++      if (warned++ < 5)
++        WARN("ambre-dx12: DispatchRays sans enregistrement de ray generation : saute");
++      return;
++    }
++    // Passe de calcul.
++    if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute) {
++      allocator_->InvalidateCurrentPass();
++      auto compute = allocator_->AllocatePass<ComputeEncoderData>();
++      compute->type = EncoderType::Compute;
++      compute->cmd_head.type = WMTComputeCommandNop;
++      compute->cmd_head.next.set(0);
++      compute->cmd_tail = (wmtcmd_base *)&compute->cmd_head;
++    }
++    // Arguments racine globaux au format du convertisseur (signature racine du calcul courant).
++    MTLD3D12RootSignature *rootsig = rootsig_compute_ ? rootsig_compute_.ptr() : rt_state_->global_root_signature.ptr();
++    uint64_t global_arguments = 0;
++    if (rootsig)
++      global_arguments = allocator_->gpu_heap_buffer_address_ + EncodeConvertedRootArgument(rootsig, rootarg_compute_staging_);
++
++    AmbreRTDispatchArguments args = {};
++    args.raygen_start = pDesc->RayGenerationShaderRecord.StartAddress;
++    args.raygen_size = pDesc->RayGenerationShaderRecord.SizeInBytes;
++    args.miss_start = pDesc->MissShaderTable.StartAddress;
++    args.miss_size = pDesc->MissShaderTable.SizeInBytes;
++    args.miss_stride = pDesc->MissShaderTable.StrideInBytes;
++    args.hit_start = pDesc->HitGroupTable.StartAddress;
++    args.hit_size = pDesc->HitGroupTable.SizeInBytes;
++    args.hit_stride = pDesc->HitGroupTable.StrideInBytes;
++    args.callable_start = pDesc->CallableShaderTable.StartAddress;
++    args.callable_size = pDesc->CallableShaderTable.SizeInBytes;
++    args.callable_stride = pDesc->CallableShaderTable.StrideInBytes;
++    args.width = pDesc->Width;
++    args.height = pDesc->Height;
++    args.depth = pDesc->Depth;
++    args.global_root_arguments = global_arguments;
++    args.resource_heap = heap_resources_ ? heap_resources_->IRBaseAddress : 0;
++    args.sampler_heap = heap_samplers_ ? heap_samplers_->IRBaseAddress : 0;
++    args.function_table_id = rt_state_->table_id;
++    auto [Params, ParamsOffset] = allocator_->AllocateGPUHeap(sizeof(args), 16);
++    memcpy(Params, &args, sizeof(args));
++
++    auto &setpso = allocator_->EncodeComputeCommand<wmtcmd_compute_setpso>();
++    setpso.type = WMTComputeCommandSetPSO;
++    setpso.pso = rt_state_->pso.handle;
++    setpso.threadgroup_size = {8, 4, 1};
++    auto &setbuf = allocator_->EncodeComputeCommand<wmtcmd_compute_setbuffer>();
++    setbuf.type = WMTComputeCommandSetBuffer;
++    setbuf.buffer = allocator_->gpu_heap_buffer_.handle;
++    setbuf.offset = ParamsOffset;
++    setbuf.index = AMBRE_RT_DISPATCH_ARGUMENTS_INDEX;
++    auto &run = allocator_->EncodeComputeCommand<wmtcmd_compute_dispatch>();
++    run.type = WMTComputeCommandDispatchThreads;
++    run.size = {pDesc->Width, pDesc->Height, pDesc->Depth};
++    // Les calculs ordinaires du jeu repartent d'un état propre.
++    dirty_state_.set(DirtyState::ComputeRootArguments, DirtyState::ComputeRootSignature);
++    dirty_state_.set(DirtyState::ComputePipelineState);
++    allocator_->InvalidateCurrentPass();
+   }
+ };
+ 
+diff --git a/src/d3d12/d3d12_descriptor_heap.cpp b/src/d3d12/d3d12_descriptor_heap.cpp
+index 81c4ec3..cd7365d 100644
+--- a/src/d3d12/d3d12_descriptor_heap.cpp
++++ b/src/d3d12/d3d12_descriptor_heap.cpp
+@@ -492,6 +492,14 @@ public:
+       gpu_storage.ZeroFilled = {{}};
+     }
+     UpdateIR(Index);
++    // Ambre : structure d'accélération (ray tracing) : le shader lit l'en-tête écrit à cette
++    // adresse (IRDescriptorTableSetAccelerationStructure).
++    if (pDesc->ViewDimension == D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE) {
++      auto &entry = mapped_ir_[Index];
++      entry.gpu_va = pDesc->RaytracingAccelerationStructure.Location;
++      entry.texture_view_id = 0;
++      entry.metadata = 0;
++    }
+     return S_OK;
+   }
+ 
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 6417a64..3cc55ca 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -401,6 +401,16 @@ public:
+       out->MSPrimitivesPipelineStatisticIncludesCulledPrimitives = D3D12_TRI_STATE_FALSE;
+       return S_OK;
+     }
++    case D3D12_FEATURE_D3D12_OPTIONS5: {
++      if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS5))
++        return E_INVALIDARG;
++      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS5 *>(pFeatureData);
++      out->SRVOnlyTiledResourceTier3 = FALSE;
++      out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
++      // Ambre : ray tracing (DXR 1.1 : pipelines et requêtes en ligne) seulement avec AMBRE_DXR=1.
++      out->RaytracingTier = AmbreDxrEnabled() ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
++      return S_OK;
++    }
+     case D3D12_FEATURE_D3D12_OPTIONS4: {
+       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS4))
+         return E_INVALIDARG;
+diff --git a/src/d3d12/d3d12_raytracing.hpp b/src/d3d12/d3d12_raytracing.hpp
+index c0c00b6..1ef2502 100644
+--- a/src/d3d12/d3d12_raytracing.hpp
++++ b/src/d3d12/d3d12_raytracing.hpp
+@@ -42,13 +42,33 @@ AmbreAccelUsage(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS flags) {
+   return usage;
+ }
+ 
++// IRDispatchRaysArgument du convertisseur d'Apple (152 octets), lu par le noyau « RaygenIndirection »
++// à l'index de tampon 3.
++#define AMBRE_RT_DISPATCH_ARGUMENTS_INDEX 3
++
++struct AmbreRTDispatchArguments {
++  uint64_t raygen_start, raygen_size;
++  uint64_t miss_start, miss_size, miss_stride;
++  uint64_t hit_start, hit_size, hit_stride;
++  uint64_t callable_start, callable_size, callable_stride;
++  uint32_t width, height, depth, padding;
++  uint64_t global_root_arguments;
++  uint64_t resource_heap;
++  uint64_t sampler_heap;
++  uint64_t function_table_id;
++  uint64_t intersection_function_table_id;
++  uint64_t intersection_function_tables;
++};
++static_assert(sizeof(AmbreRTDispatchArguments) == 152, "IRDispatchRaysArgument");
++
+ // Remplit une géométrie Metal à partir d'une géométrie DXR. `resolve(VA, &offset)` rend le tampon
+ // Metal qui contient l'adresse (0 s'il est introuvable).
+ template <typename Resolve>
+ inline bool
+ AmbreFillGeometry(const D3D12_RAYTRACING_GEOMETRY_DESC &d, WMTAccelGeometry &g, Resolve &&resolve) {
+   memset(&g, 0, sizeof(g));
+-  g.opaque = (d.Flags & D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE) ? 1 : 0;
++  // Pas de shaders any-hit / intersection pour l'instant : toute géométrie est traitée comme opaque.
++  g.opaque = 1;
+   g.no_duplicate_any_hit = (d.Flags & D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION) ? 1 : 0;
+   uint64_t offset = 0;
+   if (d.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS) {
+@@ -96,6 +116,11 @@ public:
+ 
+   HRESULT Initialize(const D3D12_STATE_OBJECT_DESC *pDesc);
+ 
++  ~MTLD3D12RTStateObject() {
++    if (table)
++      device_->UnregisterResidency(WMT::Allocation{table.handle});
++  }
++
+   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
+ 
+   void *STDMETHODCALLTYPE GetShaderIdentifier(const WCHAR *pExportName) override;
+diff --git a/src/d3d12/d3d12_state_object.cpp b/src/d3d12/d3d12_state_object.cpp
+index c043247..ea9d9a2 100644
+--- a/src/d3d12/d3d12_state_object.cpp
++++ b/src/d3d12/d3d12_state_object.cpp
+@@ -289,6 +289,8 @@ MTLD3D12RTStateObject::Initialize(const D3D12_STATE_OBJECT_DESC *pDesc) {
+     ERR("ambre-dx12: pipeline de ray tracing refuse par Metal : ", err.description().getUTF8String());
+     return E_FAIL;
+   }
++  if (table)
++    device_->RegisterResidency(WMT::Allocation{table.handle}); // lue par le noyau de lancement
+ 
+   // -- 5. Identifiants.
+   auto identifier = [](uint64_t intersection, uint64_t shader) {

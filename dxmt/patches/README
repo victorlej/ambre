@@ -141,6 +141,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      ID3D12StateObjectProperties (identifiants de shaders de 32 octets = IRShaderIdentifier). Les
      any-hit et intersection ne sont pas encore pris en charge (géométrie traitée comme opaque).
      DispatchRays reste à faire.
+0034 DirectX Raytracing, étape 4 : DispatchRays (arguments IRDispatchRaysArgument à l'index de tampon 3,
+     signature racine globale au format du convertisseur, tas de descripteurs, table de fonctions
+     visibles), SetPipelineState1, SRV de type structure d'accélération (le descripteur garde
+     l'adresse de l'en-tête), D3D12_FEATURE_D3D12_OPTIONS5 : niveau de ray tracing 1.1 annoncé
+     seulement avec AMBRE_DXR=1. Sans shaders any-hit / intersection : toute géométrie et toute
+     instance est traitée comme opaque.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
