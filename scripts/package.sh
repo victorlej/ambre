@@ -173,6 +173,7 @@ cat > Libraries/AmbreVersion.plist <<PLIST
   <key>gameBundle</key><true/>
   <key>gameDock</key><true/>
   <key>dxmtD3D12</key><true/>
+  <key>dxr</key><true/>
   <key>gameQoS</key><true/>
   <key>localBuiltins</key><true/>
   <key>gameEnv</key><true/>
