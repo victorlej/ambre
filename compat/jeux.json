@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-29b",
+  "updated": "2026-10-11",
   "games": {
     "489830": {
       "level": "optimized",
@@ -67,21 +67,35 @@
       ]
     },
     "4001890": {
-      "level": "broken",
-      "summary": "Le menu s'affiche, mais le jeu se fige au lancement d'une partie.",
+      "level": "optimized",
+      "summary": "Tourne à 71 images par seconde en moyenne, régulier, sur une partie de 1 h 38. Le gel au lancement d'une partie est corrigé.",
       "tested": {
-        "engine": "Moteur d'origine (Wine 11.17 de CrossOver)",
+        "engine": "Ambre 1.8.0 (Ambre Metal)",
         "mac": "Mac mini M4",
         "macos": "macOS 27.2",
-        "date": "2026-09-26"
+        "date": "2026-10-11"
       },
       "settings": [
-        "DXVK et DXMT essayés",
-        "Jeu Unity : DirectX 11 forcé (automatique)"
+        "Ambre Metal (Metal direct, choisi automatiquement)",
+        "Jeu Unity : DirectX 11 forcé (automatique)",
+        "Mode Jeu"
       ],
-      "issues": [
-        "Se fige juste après le démarrage de son serveur local (UnityTransport, port 7777), même en solo. Piste : le réseau de Wine sur Mac."
-      ]
+      "stats": {
+        "fps": 71.0,
+        "low": 62.1,
+        "steadiness": 0.98,
+        "stutters": "1 gros accroc en 1 h 38",
+        "gpu": 0.89,
+        "cpu": 1.0,
+        "pShare": 0.9,
+        "quality": "Réglages du jeu par défaut"
+      },
+      "notes": [
+        "Mesuré sur une partie de 98 minutes, hors chargements (11 oct. 2026) : stabilité 99,8 %, un seul gros accroc.",
+        "Corrigé depuis le 26 septembre : le jeu se figeait au lancement d'une partie (accès au micro demandé par Allia et réseau local de Wine).",
+        "Manette et sauvegardes : pas encore vérifiées."
+      ],
+      "translator": "metal"
     }
   }
 }
