@@ -1,0 +1,92 @@
+name: Ambre 3 (natif ARM64, essai)
+
+# Ambre 3 : Wine natif pour la puce Apple, sans Rosetta. Première étape : compiler la base
+# de départ, la recette de mach9 (https://github.com/athei/mach9, licence Zlib) à une version
+# figée, sur un Mac de GitHub. Le traducteur (Copal) et nos correctifs d'Ambre viendront ensuite.
+# Pas de signature ici : on garde ce qui est compilé (artefact de quelques jours) pour l'étape
+# suivante (assemblage et signature sur le Mac).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mach9_ref:
+        description: "Version de mach9 (étiquette)"
+        default: "arm64-11.20-4"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Recette de mach9
+        uses: actions/checkout@v4
+        with:
+          repository: athei/mach9
+          ref: ${{ inputs.mach9_ref }}
+          path: scripts
+          persist-credentials: false
+
+      - name: Version du code de Wine
+        id: ref
+        run: |
+          ref=$(tr -d '[:space:]' < scripts/pins/wine-src.ref)
+          test -n "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Code de Wine (ARM64)
+        uses: actions/checkout@v4
+        with:
+          repository: athei/wine
+          ref: ${{ steps.ref.outputs.ref }}
+          path: src
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Étiquette de la version de Wine
+        run: |
+          version=$(sed -n 's/^Wine version //p' src/VERSION)
+          git -C src fetch --quiet --no-tags https://github.com/wine-mirror/wine \
+            "refs/tags/wine-$version:refs/tags/wine-$version"
+          git -C src describe HEAD
+
+      - name: Xcode et outils Metal
+        run: scripts/bin/ci/host.sh --metal --xcode-choice "$RUNNER_TEMP/xcode-choice"
+
+      - name: Outils Homebrew
+        uses: ./scripts/.github/actions/brew
+        with:
+          save: false
+
+      - name: llvm-mingw
+        run: |
+          scripts/bin/ci/llvm-mingw.sh "$HOME/llvm-mingw"
+          echo "MINGW_DIR=$HOME/llvm-mingw" >> "$GITHUB_ENV"
+
+      - name: Rust
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Compilation (Wine, FEX, DXMT, vkd3d-proton, Mesa, GStreamer)
+        run: scripts/bin/build-wine.sh
+
+      - name: Contenu compilé
+        if: always()
+        run: |
+          du -sh build/* 2>/dev/null || true
+          find build -maxdepth 3 -name dist -type d -exec du -sh {} \; 2>/dev/null || true
+
+      - name: Archive
+        run: tar -C build -cJf "$RUNNER_TEMP/ambre3-base.tar.xz" --exclude='*.o' --exclude='*.a' .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ambre3-base-${{ inputs.mach9_ref }}
+          path: ${{ runner.temp }}/ambre3-base.tar.xz
+          retention-days: 5
