@@ -212,9 +212,9 @@ index b87c262..923c92b 100644
        return S_OK;
      }
  
-+    // Ambre : DXR (AMBRE_DXR=1 seulement).
-+    if ((riid == __uuidof(ID3D12GraphicsCommandList3) || riid == __uuidof(ID3D12GraphicsCommandList4)) &&
-+        AmbreDxrEnabled()) {
++    // Ambre : listes de commandes 3 et 4 toujours exposées, comme Device5 (rayons : AMBRE_DXR=1).
++    if (riid == __uuidof(ID3D12GraphicsCommandList3) ||
++        riid == __uuidof(ID3D12GraphicsCommandList4)) {
 +      *ppvObject = ref(this);
 +      return S_OK;
 +    }
@@ -609,8 +609,8 @@ index 500a29d..050c4d4 100644
  }
  
  
-+// Ambre : DirectX Raytracing (AMBRE_DXR=1 : Device5 / liste de commandes 4 exposés ; sinon rien ne
-+// change pour les jeux).
++// Ambre : DirectX Raytracing (AMBRE_DXR=1 : rayons annoncés aux jeux). Device5 est toujours exposé, comme
++// sous Windows : Elden Ring plante sans lui ; sans AMBRE_DXR, le niveau annoncé reste « non pris en charge ».
 +bool AmbreDxrEnabled() {
 +  static const bool enabled = [] {
 +    auto value = env::getEnvVar("AMBRE_DXR");
@@ -646,7 +646,7 @@ index 500a29d..050c4d4 100644
        return S_OK;
      }
  
-+    if (riid == __uuidof(ID3D12Device5) && AmbreDxrEnabled()) {
++    if (riid == __uuidof(ID3D12Device5)) {
 +      *ppvObject = ref(this);
 +      return S_OK;
 +    }
