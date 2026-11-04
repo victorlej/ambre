@@ -174,6 +174,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      AMBRE_VIRTUAL_MODES=1 → la sortie DXGI propose en plus 75 %, 67 %, 58 % et 50 % de l'écran ; en
      plein écran, une résolution plus petite que l'écran ne change plus le mode réel (la fenêtre reste
      à la taille de l'écran, MetalFX agrandit l'image du jeu, sans flou d'étirement de macOS).
+0039 Compteur d'Allia à la bonne taille avec MetalFX (taille de la fenêtre passée au Presenter :
+     pixels par point = échelle de base × image affichée ÷ fenêtre ; avant, MetalFX Auto le dessinait
+     1,33 fois trop gros). Relevé DirectX 12 « ambre-perf » toutes les 10 s (étude A2) : part du temps
+     où la puce graphique exécute chaque file (GPUStartTime/EndTime des lots), lots et envois par
+     seconde, temps de préparation des lots sur le fil du jeu, attentes « file pleine », pipelines
+     créés pendant la partie (durée totale et la plus longue).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

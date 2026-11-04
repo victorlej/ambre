@@ -1,0 +1,253 @@
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index 8e19da6..d26489e 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -519,10 +519,13 @@ public:
+       backbuffer_desc_.Height = desc_.Height;
+     }
+ 
++    // Ambre (0039) : taille de la fenêtre pour le compteur (toujours, pas seulement en MetalFX Auto).
++    uint32_t window_width = 0, window_height = 0;
++    wsi::getWindowSize(hWnd, &window_width, &window_height);
++    presenter->changeWindowSize(window_width, window_height);
++
+     // Ambre (0038) : MetalFX automatique : l'image du jeu est agrandie à la taille de sa fenêtre.
+     if (metalfx_auto_) {
+-      uint32_t window_width = 0, window_height = 0;
+-      wsi::getWindowSize(hWnd, &window_width, &window_height);
+       float factor = 1.0f;
+       if (desc_.Width && desc_.Height && window_width && window_height)
+         factor = std::min(float(window_width) / desc_.Width, float(window_height) / desc_.Height);
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index dca94d8..c80d1bf 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -26,6 +26,9 @@
+ #include <atomic>
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
++#include <chrono>
++#include <string>
++#include <algorithm>
+ 
+ namespace dxmt {
+ 
+@@ -77,6 +80,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+       if (inflight.semaphore)
+         ReleaseSemaphore(inflight.semaphore, 1, nullptr);
+ 
++      AmbrePerfCommandBuffer(inflight.cmdbuf);
++
+       inflight = {};
+ 
+       inflight_cmdbuf_count_.fetch_sub(1, std::memory_order_release);
+@@ -112,10 +117,63 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+ 
+   CommittingScope
+   StartCommitting() {
+-    inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
++    if (inflight_cmdbuf_count_.load(std::memory_order_acquire) >= kCommandQueueSize) {
++      // File pleine : le jeu attend la puce graphique (relevé A2).
++      auto start = std::chrono::steady_clock::now();
++      inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
++      perf_full_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
++    }
++    perf_syncs_++;
+     return CommittingScope(this);
+   }
+ 
++  /* Ambre (0039) : relevé de performances (étude A2), toutes les 10 s dans le journal :
++     lots Metal par seconde, part du temps où la puce graphique exécute cette file, temps du fil du
++     jeu passé à préparer les lots, attentes « file pleine » et pipelines créés pendant la partie. */
++  std::atomic<uint64_t> perf_syncs_{0}, perf_encode_ns_{0}, perf_full_ns_{0};
++  uint64_t perf_window_start_ = 0, perf_last_end_ = 0, perf_busy_ns_ = 0, perf_cmdbufs_ = 0;
++  uint64_t perf_pipelines_seen_ = 0, perf_pipeline_ns_seen_ = 0;
++
++  void
++  AmbrePerfCommandBuffer(WMT::CommandBuffer cmdbuf) {
++    uint64_t start = cmdbuf.gpuStartTime(), end = cmdbuf.gpuEndTime();
++    if (!start || end <= start)
++      return;
++    if (!perf_window_start_)
++      perf_window_start_ = start;
++    if (end > perf_last_end_) {
++      perf_busy_ns_ += end - std::max(start, perf_last_end_);
++      perf_last_end_ = end;
++    }
++    perf_cmdbufs_++;
++    uint64_t window = perf_last_end_ - perf_window_start_;
++    if (window < 10'000'000'000ull)
++      return;
++    double seconds = window / 1e9;
++    const char *kind = desc_.Type == D3D12_COMMAND_LIST_TYPE_DIRECT ? "graphique"
++                       : desc_.Type == D3D12_COMMAND_LIST_TYPE_COMPUTE ? "calcul"
++                       : desc_.Type == D3D12_COMMAND_LIST_TYPE_COPY ? "copie" : "autre";
++    uint64_t syncs = perf_syncs_.exchange(0), encode = perf_encode_ns_.exchange(0), full = perf_full_ns_.exchange(0);
++    std::string pipelines;
++    if (desc_.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
++      uint64_t count = ambre_perf::pipelines.load(), ns = ambre_perf::pipeline_ns.load();
++      uint64_t max = ambre_perf::pipeline_max_ns.exchange(0);
++      pipelines = ", pipelines crees " + std::to_string(count - perf_pipelines_seen_) + " (" +
++                  std::to_string((ns - perf_pipeline_ns_seen_) / 1000000) + " ms, le plus long " +
++                  std::to_string(max / 1000000) + " ms)";
++      perf_pipelines_seen_ = count;
++      perf_pipeline_ns_seen_ = ns;
++    }
++    WARN(
++        "ambre-perf: file ", kind, " : puce graphique occupee ", int(100.0 * perf_busy_ns_ / window), " %, ",
++        int(perf_cmdbufs_ / seconds), " lots/s (", int(syncs / seconds), " envois/s), preparation ",
++        int(encode / 1e6 / seconds), " ms/s, file pleine ", int(full / 1e6 / seconds), " ms/s", pipelines
++    );
++    perf_window_start_ = perf_last_end_;
++    perf_busy_ns_ = 0;
++    perf_cmdbufs_ = 0;
++  }
++
+ public:
+   MTLD3D12CommandQueueImpl(MTLD3D12Device *pDevice) :
+       MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory>(pDevice),
+@@ -200,6 +258,14 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
++    // Relevé A2 : temps du fil du jeu passé à traduire ses listes en commandes Metal.
++    struct EncodeTimer {
++      std::atomic<uint64_t> &total;
++      std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
++      ~EncodeTimer() {
++        total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
++      }
++    } encode_timer{perf_encode_ns_};
+     auto scope = StartCommitting();
+     auto &cmdbuf = scope.inflight.cmdbuf;
+     for (unsigned i = 0; i < Count; i++) {
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 6ec5ea8..72172ec 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -185,14 +185,31 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
+-    return dxmt::CreateGraphicsPipelineState(this, pDesc, riid, ppPipelineState);
++    auto start = std::chrono::steady_clock::now();
++    HRESULT hr = dxmt::CreateGraphicsPipelineState(this, pDesc, riid, ppPipelineState);
++    AmbreCountPipeline(start);
++    return hr;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
+-    return dxmt::CreateComputePipelineState(this, pDesc, riid, ppPipelineState);
++    auto start = std::chrono::steady_clock::now();
++    HRESULT hr = dxmt::CreateComputePipelineState(this, pDesc, riid, ppPipelineState);
++    AmbreCountPipeline(start);
++    return hr;
+   };
+ 
++  // Ambre (0039) : durée de création d'un pipeline (traduction de ses shaders), pour le relevé A2.
++  static void
++  AmbreCountPipeline(std::chrono::steady_clock::time_point start) {
++    uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
++    ambre_perf::pipelines.fetch_add(1, std::memory_order_relaxed);
++    ambre_perf::pipeline_ns.fetch_add(ns, std::memory_order_relaxed);
++    uint64_t max = ambre_perf::pipeline_max_ns.load(std::memory_order_relaxed);
++    while (ns > max && !ambre_perf::pipeline_max_ns.compare_exchange_weak(max, ns)) {
++    }
++  }
++
+   HRESULT STDMETHODCALLTYPE
+   CreateCommandList(
+       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, ID3D12CommandAllocator *pCommandAllocator,
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 449a055..e15ddb0 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -29,6 +29,12 @@
+ #include "airconv_public.h"
+ #include "dxmt_buffer.hpp"
+ #include "dxmt_scaler.hpp"
++
++namespace dxmt::ambre_perf {
++/* Ambre (0039) : relevé de performances DirectX 12 (étude A2) : pipelines créés pendant la partie
++   (traduction des shaders sur le fil du jeu) ; écrit dans le journal par la file graphique. */
++inline std::atomic<uint64_t> pipelines{0}, pipeline_ns{0}, pipeline_max_ns{0};
++} // namespace dxmt::ambre_perf
+ #include "dxmt_command.hpp"
+ #include "dxmt_fence.hpp"
+ #include "dxmt_format.hpp"
+diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
+index 90deb4b..40edb1b 100644
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -537,10 +537,13 @@ public:
+       backbuffer_desc_.Height = desc_.Height;
+     }
+ 
++    // Ambre (0039) : taille de la fenêtre pour le compteur (toujours, pas seulement en MetalFX Auto).
++    uint32_t window_width = 0, window_height = 0;
++    wsi::getWindowSize(hWnd, &window_width, &window_height);
++    presenter->changeWindowSize(window_width, window_height);
++
+     // Ambre (0038) : MetalFX automatique : l'image du jeu est agrandie à la taille de sa fenêtre.
+     if (metalfx_auto_) {
+-      uint32_t window_width = 0, window_height = 0;
+-      wsi::getWindowSize(hWnd, &window_width, &window_height);
+       float factor = 1.0f;
+       if (desc_.Width && desc_.Height && window_width && window_height)
+         factor = std::min(float(window_width) / desc_.Width, float(window_height) / desc_.Height);
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+index 190f91c..d22c893 100644
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -242,6 +242,11 @@ Presenter::encodeOverlay(WMT::RenderCommandEncoder &encoder) {
+   // Taille : l'image est dessinée pour `scale` pixels par point ; l'écran du jeu en a contents_scale.
+   double drawable_width = layer_props_.drawable_width, drawable_height = layer_props_.drawable_height;
+   double pixels_per_point = layer_props_.contents_scale > 0 ? layer_props_.contents_scale : 1;
++  // Ambre (0039) : pixels de l'image affichée par point de l'écran, d'après la fenêtre (juste aussi quand
++  // le jeu calcule plus petit que la fenêtre et que MetalFX agrandit : contents_scale compte alors
++  // l'agrandissement deux fois et le compteur sortait 1,33 fois trop gros).
++  if (window_width_ > 0 && drawable_width > 0)
++    pixels_per_point = base_contents_scale_ * drawable_width / window_width_;
+   double factor = pixels_per_point / (info.scale > 0 ? info.scale : 1);
+   double w = info.width * factor, h = info.height * factor;
+   double inset = info.inset * pixels_per_point;
+diff --git a/src/dxmt/dxmt_presenter.hpp b/src/dxmt/dxmt_presenter.hpp
+index d30add9..b24145a 100644
+--- a/src/dxmt/dxmt_presenter.hpp
++++ b/src/dxmt/dxmt_presenter.hpp
+@@ -39,6 +39,10 @@ public:
+   /* Ambre (0038) : facteur d'agrandissement MetalFX changé en cours de jeu (MetalFX automatique). */
+   void changeScaleFactor(float scale_factor);
+ 
++  /* Ambre (0039) : taille de la fenêtre du jeu (pixels Windows), pour dessiner le compteur à la taille
++     de l'écran quelle que soit la résolution de l'image (MetalFX Auto : image plus petite que la fenêtre). */
++  void changeWindowSize(uint32_t width, uint32_t height) { window_width_ = width; window_height_ = height; }
++
+   void changeHDRMetadata(const WMTHDRMetadata *metadata);
+ 
+   void changeGammaRamp(const DXMTGammaRamp *gamma_ramp);
+@@ -84,6 +88,7 @@ private:
+   InternalCommandLibrary &lib_;
+   WMTLayerProps layer_props_;
+   double base_contents_scale_ = 1.0; // Ambre (0038) : échelle de la couche avant agrandissement
++  uint32_t window_width_ = 0, window_height_ = 0; // Ambre (0039)
+   uint32_t sample_count_;
+   WMTColorSpace colorspace_ = WMTColorSpaceSRGB;
+   WMTHDRMetadata hdr_metadata_;
+diff --git a/src/winemetal/Metal.hpp b/src/winemetal/Metal.hpp
+index 402fba2..81a973c 100644
+--- a/src/winemetal/Metal.hpp
++++ b/src/winemetal/Metal.hpp
+@@ -700,6 +700,11 @@ public:
+     return LogContainer{MTLCommandBuffer_logs(handle)};
+   }
+ 
++  uint64_t
++  gpuStartTime() {
++    return MTLCommandBuffer_property(handle, WMTCommandBufferPropertyGPUStartTime);
++  }
++
+   uint64_t
+   gpuEndTime() {
+     return MTLCommandBuffer_property(handle, WMTCommandBufferPropertyGPUEndTime);
