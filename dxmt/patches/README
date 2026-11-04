@@ -151,6 +151,19 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0035 DirectX 12 : WriteBufferImmediate (ID3D12GraphicsCommandList2). Noyau interne
      ambre_write_immediate : une valeur de 32 bits par fil à son adresse GPU, huit par passe. Elden
      Ring s'en sert pour ses marqueurs d'avancement du GPU et quittait sur écran noir sans eux.
+0036 DirectX 12 : tessellation émulée (hull + domain shaders, sans geometry shader ni stream output),
+     comme IRRuntimeNewGeometryTessellationEmulationPipeline du runtime d'Apple : sommets en object
+     shader (tessellationEnabled), lecture des sommets et hull shader (irconverter_hull_shader) liés à
+     l'étape object ; tessellateur (irconverter_tessellator) et domain shader liés au mesh shader de
+     passage irconverter_domain_shader_{triangle,line,point}_passthrough. winemetal :
+     MTLDevice_newTessellationEmulationPipeline (appel 156), mémoire de groupe object (15 360 octets,
+     champ reserved[0] du dessin mesh) et tables du tessellateur à l'index 7, fournies par le module
+     de conversion (ambre_dxil_tessellator_tables : données d'Apple, Apache 2.0, restent dans le
+     module). d3d12 : réflexion étendue (hull : patches et fils par groupe, points, sortie, facteur
+     max ; domain : primitives par groupe mesh), arguments racine aussi à l'index 3 (hull / domain),
+     dessin des listes de patches par groupes mesh. Échec de création : pipeline désactivé comme
+     avant. AMBRE_DX12_TESSELLATION=0 la coupe. Vérifié par l'essai natif d'Ambre Pro
+     tests/tess/tessrun.m (triangle tessellé, facteurs 1 à 8 : couverture complète).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

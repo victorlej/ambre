@@ -1,0 +1,555 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 589afb3..766ee4c 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -709,6 +709,12 @@ public:
+               if (pso_graphics_->IsGeometryEmulated) {
+                 EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, buffer, offset, index);
+                 EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, buffer, offset, index);
++                // Ambre (0036) : hull et domain shaders lisent les arguments racine à l'index 3
++                // (kIRArgumentBufferHullDomainBindPoint du runtime d'Apple).
++                if (pso_graphics_->IsTessellationEmulated && index == 2) {
++                  EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, buffer, offset, 3);
++                  EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, buffer, offset, 3);
++                }
+               }
+             }
+         );
+@@ -891,6 +897,10 @@ public:
+   // (index 4) et IRRuntimeDrawInfo (index 5) aux étapes object et mesh, puis groupes mesh.
+   void
+   AmbreDrawGeometryEmulated(bool Indexed, UINT Count, UINT Instances, UINT Start, INT BaseVertex, UINT StartInstance) {
++    if (pso_graphics_->IsTessellationEmulated) {
++      AmbreDrawTessellationEmulated(Indexed, Count, Instances, Start, BaseVertex, StartInstance);
++      return;
++    }
+     uint32_t primitive, vertices, overlap;
+     switch (topology_) {
+     case D3D_PRIMITIVE_TOPOLOGY_POINTLIST: primitive = 0; vertices = 1; overlap = 0; break;
+@@ -965,6 +975,83 @@ public:
+     cmd.threadgroup_per_grid = {(provoking + object_stride - 1) / object_stride, Instances, 1};
+     cmd.object_threadgroup_size = {object_stride + overlap, 1, 1};
+     cmd.mesh_threadgroup_size = {max_prims_per_mesh, 1, 1};
++    cmd.reserved[0] = cmd.reserved[1] = cmd.reserved[2] = 0;
++  }
++
++  // Ambre (0036) : dessin de patches avec la tessellation émulée (calculs de
++  // IRRuntimeDraw[Indexed]PatchesTessellationEmulation du runtime d'Apple) : mêmes emplacements que
++  // le geometry shader émulé (paramètres à l'index 4, IRRuntimeDrawInfo à l'index 5), 15 360 octets
++  // de mémoire de groupe pour l'étape object.
++  void
++  AmbreDrawTessellationEmulated(bool Indexed, UINT Count, UINT Instances, UINT Start, INT BaseVertex, UINT StartInstance) {
++    if (topology_ < D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST ||
++        topology_ > D3D_PRIMITIVE_TOPOLOGY_32_CONTROL_POINT_PATCHLIST)
++      return; // un pipeline de tessellation ne dessine que des patches
++    if (!Count || !Instances)
++      return;
++    auto pso = pso_graphics_;
++    uint32_t control_points = pso->ts_input_control_points;
++    uint32_t patches_per_object = std::max(1u, pso->ts_patches_per_object);
++    uint32_t threads_per_patch = std::max(1u, pso->ts_threads_per_patch);
++    uint32_t max_prims_per_mesh = std::max(1u, pso->ts_max_input_primitives);
++    // Recouvrement des primitives entre groupes mesh : 0 point, 1 ligne, 2 triangles.
++    uint32_t overlap = pso->ts_output_primitive == 1 ? 0 : pso->ts_output_primitive == 2 ? 1 : 2;
++    uint32_t object_stride = patches_per_object * control_points;
++    if (!object_stride)
++      return;
++
++    struct AmbreDrawInfo {
++      uint16_t index_type;
++      uint8_t primitive_topology;
++      uint8_t threads_per_patch;
++      uint16_t max_input_primitives_per_mesh_threadgroup;
++      uint16_t object_threadgroup_vertex_stride;
++      uint16_t mesh_threadgroup_primitive_stride;
++      uint16_t gs_instance_count;
++      uint16_t patches_per_object_threadgroup;
++      uint16_t input_control_points_per_patch;
++      uint64_t index_buffer;
++    };
++    static_assert(sizeof(AmbreDrawInfo) == 24, "IRRuntimeDrawInfo");
++    auto [Ptr, Offset] = allocator_->AllocateGPUHeap(64, 16);
++    memset(Ptr, 0, 64);
++    auto params = reinterpret_cast<uint32_t *>(Ptr);
++    if (Indexed) {
++      params[0] = Count;
++      params[1] = Instances;
++      params[2] = Start; // en indices : l'adresse du tampon d'index porte déjà son décalage
++      params[3] = (uint32_t)BaseVertex;
++      params[4] = StartInstance;
++    } else {
++      params[0] = Count;
++      params[1] = Instances;
++      params[2] = Start;
++      params[3] = StartInstance;
++    }
++    auto info = reinterpret_cast<AmbreDrawInfo *>(reinterpret_cast<uint8_t *>(Ptr) + 32);
++    info->index_type = Indexed ? (index_type == WMTIndexTypeUInt32 ? 2 : 1) : 0;
++    info->primitive_topology = 3; // IRRuntimePrimitiveType : les listes de patches valent « triangle »
++    info->threads_per_patch = (uint8_t)threads_per_patch;
++    info->max_input_primitives_per_mesh_threadgroup = (uint16_t)max_prims_per_mesh;
++    info->object_threadgroup_vertex_stride = (uint16_t)object_stride;
++    info->mesh_threadgroup_primitive_stride = (uint16_t)(max_prims_per_mesh > overlap ? max_prims_per_mesh - overlap : 1);
++    info->gs_instance_count = 1; // pas de geometry shader : mesh shader de passage
++    info->patches_per_object_threadgroup = (uint16_t)patches_per_object;
++    info->input_control_points_per_patch = (uint16_t)control_points;
++    info->index_buffer = Indexed ? index_buffer_address : 0;
++    auto heap = allocator_->gpu_heap_buffer_.handle;
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, heap, Offset, 4);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, heap, Offset, 4);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetObjectBuffer, heap, Offset + 32, 5);
++    EncodeConvertedRenderBuffer(WMTRenderCommandSetMeshBuffer, heap, Offset + 32, 5);
++
++    auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_meshthreadgroups>();
++    cmd.type = WMTRenderCommandDrawMeshThreadgroups;
++    cmd.threadgroup_per_grid = {(Count + object_stride - 1) / object_stride, Instances, 1};
++    cmd.object_threadgroup_size = {patches_per_object * threads_per_patch, 1, 1};
++    cmd.mesh_threadgroup_size = {max_prims_per_mesh, 1, 1};
++    cmd.reserved[0] = 15360;
++    cmd.reserved[1] = cmd.reserved[2] = 0;
+   }
+ 
+   // Ambre : arguments racine au format du Metal Shader Converter. Même disposition que DXMT
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 24f460d..56e82d6 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -202,6 +202,15 @@ public:
+   uint32_t IsGeometryEmulated = 0;
+   uint32_t gs_vertex_size = 0;
+   uint32_t gs_max_input_primitives = 0;
++  /* Ambre (0036) : tessellation émulée (pipeline mesh : sommets et hull shader en object shader,
++     tessellateur et domain shader en mesh shader). IsGeometryEmulated vaut aussi 1 (arguments racine
++     et sommets aux étapes object / mesh) ; le dessin suit la configuration ci-dessous. */
++  uint32_t IsTessellationEmulated = 0;
++  uint32_t ts_patches_per_object = 0;
++  uint32_t ts_threads_per_patch = 0;
++  uint32_t ts_input_control_points = 0;
++  uint32_t ts_output_primitive = 0;
++  uint32_t ts_max_input_primitives = 0;
+ 
+   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
+ 
+diff --git a/src/d3d12/d3d12_pipeline_graphics.cpp b/src/d3d12/d3d12_pipeline_graphics.cpp
+index 5a50e7b..d08dc29 100644
+--- a/src/d3d12/d3d12_pipeline_graphics.cpp
++++ b/src/d3d12/d3d12_pipeline_graphics.cpp
+@@ -735,6 +735,141 @@ public:
+     return S_OK;
+   }
+ 
++  // Ambre (0036) : pipeline avec hull et domain shaders (sans geometry shader ni stream output),
++  // émulé par un pipeline mesh (Metal Shader Converter, construction du runtime d'Apple) : sommets
++  // + hull shader → object shader, tessellateur + domain shader → mesh shader de passage.
++  HRESULT
++  InitializeTessellationEmulated(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
++    if (pDesc->PS.pShaderBytecode && !IsDXIL(pDesc->PS))
++      return E_NOTIMPL;
++    HRESULT hr;
++    auto metal = device_->GetMTLDevice();
++    pDesc_root_signature_ = pDesc->pRootSignature;
++
++    WMTRenderPipelineInfo info;
++    WMT::InitializeRenderPipelineInfo(info);
++    bool dual_source_blending = false;
++    if (FAILED(hr = InitializePSO(pDesc, info, dual_source_blending)))
++      return hr;
++
++    // Disposition des sommets au format du convertisseur (comme InitializeGeometryEmulated).
++    WMTIRInputLayout layout{};
++    layout.version = 1;
++    uint32_t append_offset[32] = {};
++    uint32_t used_slots = 0;
++    for (unsigned j = 0; j < pDesc->InputLayout.NumElements && layout.num_elements < 31; j++) {
++      auto &element = pDesc->InputLayout.pInputElementDescs[j];
++      if (element.InputSlot >= 31)
++        continue;
++      MTL_DXGI_FORMAT_DESC format;
++      if (FAILED(MTLQueryDXGIFormat(metal, element.Format, format)) || !format.BytesPerTexel) {
++        ERR("ambre-dx12: format de sommet non pris en charge : ", element.Format);
++        return E_INVALIDARG;
++      }
++      uint32_t offset = element.AlignedByteOffset == D3D12_APPEND_ALIGNED_ELEMENT
++                            ? align(append_offset[element.InputSlot], std::min(4u, format.BytesPerTexel))
++                            : element.AlignedByteOffset;
++      append_offset[element.InputSlot] = offset + format.BytesPerTexel;
++      auto &e = layout.elements[layout.num_elements];
++      layout.semantic_names[layout.num_elements] = (uint64_t)(uintptr_t)element.SemanticName;
++      e.semantic_index = element.SemanticIndex;
++      e.format = element.Format;
++      e.input_slot = element.InputSlot;
++      e.aligned_byte_offset = offset;
++      e.instance_data_step_rate = element.InstanceDataStepRate;
++      e.input_slot_class = element.InputSlotClass;
++      layout.num_elements++;
++      used_slots |= 1u << element.InputSlot;
++    }
++
++    WMTIRReflection2 vs_reflection{}, hs_reflection{}, ds_reflection{};
++    WMT::Reference<WMT::Library> vs_library, stage_in_library, hs_library, ds_library;
++    if (FAILED(hr = ConvertEmulated(pDesc->VS, pDesc->PrimitiveTopologyType, &layout, vs_reflection, vs_library, &stage_in_library)))
++      return hr;
++    if (FAILED(hr = ConvertEmulated(pDesc->HS, pDesc->PrimitiveTopologyType, nullptr, hs_reflection, hs_library, nullptr)))
++      return hr;
++    if (FAILED(hr = ConvertEmulated(pDesc->DS, pDesc->PrimitiveTopologyType, nullptr, ds_reflection, ds_library, nullptr)))
++      return hr;
++    if (!hs_reflection.hs_max_patches_per_object || !hs_reflection.hs_max_threads_per_patch ||
++        !hs_reflection.hs_input_control_points || !ds_reflection.ds_max_input_primitives) {
++      ERR("ambre-dx12: tessellation non emulee : description du hull / domain shader absente du module");
++      return E_FAIL;
++    }
++    WMTIRReflection ps_reflection{};
++    WMT::Reference<WMT::Function> ps_func;
++    if (pDesc->PS.pShaderBytecode) {
++      uint32_t int_rt_mask = 0;
++      for (unsigned i = 0; i < pDesc->NumRenderTargets && i < 8; i++) {
++        if (IsIntegerFormat(pDesc->RTVFormats[i]))
++          int_rt_mask |= 1u << i;
++      }
++      if (FAILED(
++              hr = ConvertDXIL(
++                  device_, pDesc->PS, pDesc->pRootSignature, int_rt_mask, dual_source_blending, ps_func, ps_reflection
++              )
++          ))
++        return hr;
++    }
++
++    // Sortie du tessellateur (IRTessellatorOutputPrimitive : 1 point, 2 ligne, 3 et 4 triangles).
++    const char *passthrough;
++    switch (hs_reflection.hs_output_primitive) {
++    case 1: passthrough = "irconverter_domain_shader_point_passthrough"; break;
++    case 2: passthrough = "irconverter_domain_shader_line_passthrough"; break;
++    default: passthrough = "irconverter_domain_shader_triangle_passthrough"; break;
++    }
++
++    WMTTessellationEmulationPipelineInfo tess{};
++    WMT::InitializeMeshRenderPipelineInfo(tess.mesh);
++    for (unsigned i = 0; i < 8; i++)
++      tess.mesh.colors[i] = info.colors[i];
++    tess.mesh.alpha_to_coverage_enabled = info.alpha_to_coverage_enabled;
++    tess.mesh.logic_operation_enabled = info.logic_operation_enabled;
++    tess.mesh.logic_operation = info.logic_operation;
++    tess.mesh.rasterization_enabled = info.rasterization_enabled;
++    tess.mesh.raster_sample_count = info.raster_sample_count;
++    tess.mesh.depth_pixel_format = info.depth_pixel_format;
++    tess.mesh.stencil_pixel_format = info.stencil_pixel_format;
++    tess.stage_in_library = stage_in_library.handle;
++    tess.vertex_library = vs_library.handle;
++    tess.hull_library = hs_library.handle;
++    tess.domain_library = ds_library.handle;
++    tess.fragment_function = ps_func ? ps_func.handle : 0;
++    snprintf(tess.vertex_function, sizeof(tess.vertex_function), "%s", vs_reflection.base.entry_point);
++    snprintf(tess.passthrough_function, sizeof(tess.passthrough_function), "%s", passthrough);
++    tess.vertex_output_size = vs_reflection.vertex_output_size;
++    tess.max_tessellation_factor = hs_reflection.hs_max_tessellation_factor > 0 ? hs_reflection.hs_max_tessellation_factor : 64.0f;
++    obj_handle_t err = 0;
++    auto handle = MTLDevice_newTessellationEmulationPipeline(metal.handle, &tess, &err);
++    if (!handle) {
++      WMT::Error error;
++      error.handle = err;
++      ERR("ambre-dx12: tessellation emulee refusee par Metal (", vs_reflection.base.entry_point, ") : ",
++          err ? error.description().getUTF8String() : "?");
++      return E_FAIL;
++    }
++    pso = WMT::Reference<WMT::RenderPipelineState>(handle);
++    InitializeDSSO(pDesc);
++    InitializeRasterizerState(pDesc);
++    slot_mask = used_slots;
++    gs_vertex_size = vs_reflection.vertex_output_size;
++    gs_max_input_primitives = ds_reflection.ds_max_input_primitives;
++    ts_patches_per_object = hs_reflection.hs_max_patches_per_object;
++    ts_threads_per_patch = hs_reflection.hs_max_threads_per_patch;
++    ts_input_control_points = hs_reflection.hs_input_control_points;
++    ts_output_primitive = hs_reflection.hs_output_primitive;
++    ts_max_input_primitives = ds_reflection.ds_max_input_primitives;
++    IsConvertedPipelineState = 1;
++    IsGeometryEmulated = 1;
++    IsTessellationEmulated = 1;
++    static std::atomic<uint32_t> reported = 0;
++    if (reported++ < 20)
++      WARN("ambre-dx12: tessellation emulee : ", vs_reflection.base.entry_point, " (", ts_input_control_points,
++           " points par patch, ", ts_patches_per_object, " patches et ", ts_threads_per_patch, " fils par groupe, ",
++           ts_max_input_primitives, " primitives par groupe mesh)");
++    return S_OK;
++  }
++
+   ID3D12RootSignature *pDesc_root_signature_ = nullptr;
+ 
+   HRESULT
+@@ -743,6 +878,19 @@ public:
+     if (pDesc->GS.pShaderBytecode && !pDesc->HS.pShaderBytecode && !pDesc->DS.pShaderBytecode &&
+         !pDesc->StreamOutput.NumEntries && IsDXIL(pDesc->GS))
+       return InitializeGeometryEmulated(pDesc);
++    // Ambre (0036) : hull + domain shaders sans geometry shader ni stream output → émulation.
++    // AMBRE_DX12_TESSELLATION=0 la coupe (dessins sautés comme avant).
++    static const bool tessellation = [] {
++      auto value = env::getEnvVar("AMBRE_DX12_TESSELLATION");
++      return value.empty() || value != "0";
++    }();
++    if (tessellation && pDesc->HS.pShaderBytecode && pDesc->DS.pShaderBytecode && !pDesc->GS.pShaderBytecode &&
++        !pDesc->StreamOutput.NumEntries && IsDXIL(pDesc->HS) && IsDXIL(pDesc->DS)) {
++      HRESULT hr = InitializeTessellationEmulated(pDesc);
++      if (SUCCEEDED(hr))
++        return hr;
++      // Échec : on retombe sur l'ancien comportement (pipeline désactivé, dessins sautés).
++    }
+     if (pDesc->StreamOutput.NumEntries || pDesc->GS.pShaderBytecode || pDesc->HS.pShaderBytecode ||
+         pDesc->DS.pShaderBytecode) {
+       // Pas encore d'émulation (le convertisseur la fait avec des mesh shaders) : on note ce que
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 0462cf5..0744b31 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -28,6 +28,9 @@ execute_on_main(dispatch_block_t block) {
+   }
+ }
+ 
++/* Ambre (0036) : tables du tessellateur (défini plus bas, avec le module de conversion DXIL). */
++static id<MTLBuffer> ambre_tessellator_tables(id<MTLDevice> device);
++
+ static NTSTATUS
+ _NSObject_retain(NSObject **obj) {
+   [*obj retain];
+@@ -1287,6 +1290,15 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
+     }
+     case WMTRenderCommandDrawMeshThreadgroups: {
+       struct wmtcmd_render_draw_meshthreadgroups *body = (struct wmtcmd_render_draw_meshthreadgroups *)next;
++      if (body->reserved[0]) {
++        // Tessellation émulée : mémoire de groupe « object » et tables du tessellateur (index 7).
++        [encoder setObjectThreadgroupMemoryLength:body->reserved[0] atIndex:0];
++        id<MTLBuffer> tables = ambre_tessellator_tables([encoder device]);
++        if (tables) {
++          [encoder setObjectBuffer:tables offset:0 atIndex:7];
++          [encoder setMeshBuffer:tables offset:0 atIndex:7];
++        }
++      }
+       [encoder drawMeshThreadgroups:MTLSizeMake(
+                                         body->threadgroup_per_grid.width, body->threadgroup_per_grid.height,
+                                         body->threadgroup_per_grid.depth
+@@ -3457,6 +3469,9 @@ static ambre_dxil_rt_convert_fn ambre_dxil_rt_convert;
+ static ambre_dxil_convert2_fn ambre_dxil_convert2;
+ static ambre_dxil_convert_fn ambre_dxil_convert;
+ static ambre_dxil_free_fn ambre_dxil_free;
++/* Ambre (0036) : facultatif ; rend la taille des tables du tessellateur d'Apple et les copie. */
++typedef uint64_t (*ambre_dxil_tessellator_tables_fn)(void *destination, uint64_t size);
++static ambre_dxil_tessellator_tables_fn ambre_dxil_tessellator_tables;
+ static pthread_once_t ambre_dxil_once = PTHREAD_ONCE_INIT;
+ 
+ static void
+@@ -3482,6 +3497,7 @@ ambre_dxil_load(void) {
+   ambre_dxil_free = (ambre_dxil_free_fn)dlsym(lib, "ambre_dxil_free");
+   ambre_dxil_convert2 = (ambre_dxil_convert2_fn)dlsym(lib, "ambre_dxil_convert2");
+   ambre_dxil_rt_convert = (ambre_dxil_rt_convert_fn)dlsym(lib, "ambre_dxil_rt_convert");
++  ambre_dxil_tessellator_tables = (ambre_dxil_tessellator_tables_fn)dlsym(lib, "ambre_dxil_tessellator_tables");
+   if (!ambre_dxil_convert || !ambre_dxil_free) {
+     ambre_dxil_convert = NULL;
+     fprintf(stderr, "ambre-dx12: module de conversion DXIL incomplet (%s)\n", path);
+@@ -3635,6 +3651,109 @@ _MTLDevice_newGeometryEmulationPipeline(void *obj) {
+   return STATUS_SUCCESS;
+ }
+ 
++/* Ambre (0036) : tables du tessellateur converti (fonction « irconverter_tessellator »), fournies
++   par le module de conversion (données d'Apple, Apache 2.0) et attendues à l'index 7
++   (kIRRuntimeTessellatorTablesBindPoint). Sans elles, les triangles qui touchent un bord du patch
++   disparaissaient. Un tampon par appareil, chargé au premier dessin tessellé. */
++static id<MTLBuffer>
++ambre_tessellator_tables(id<MTLDevice> device) {
++  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++  static id<MTLDevice> owner = nil;
++  static id<MTLBuffer> buffer = nil;
++  static bool tried = false;
++  pthread_mutex_lock(&lock);
++  if (owner != device) {
++    [buffer release];
++    buffer = nil;
++    owner = device;
++    tried = false;
++  }
++  if (!buffer && !tried) {
++    tried = true;
++    pthread_once(&ambre_dxil_once, ambre_dxil_load);
++    uint64_t size = ambre_dxil_tessellator_tables ? ambre_dxil_tessellator_tables(NULL, 0) : 0;
++    if (size) {
++      buffer = [device newBufferWithLength:size options:MTLResourceStorageModeShared];
++      if (buffer)
++        ambre_dxil_tessellator_tables([buffer contents], size);
++    } else {
++      fprintf(stderr, "ambre-dx12: tables du tessellateur absentes du module (tessellation incomplete)\n");
++    }
++  }
++  id<MTLBuffer> result = buffer;
++  pthread_mutex_unlock(&lock);
++  return result;
++}
++
++/* Ambre (0036) : pipeline mesh qui émule la tessellation (même construction que
++   IRRuntimeNewGeometryTessellationEmulationPipeline du runtime d'Apple) : sommets en object shader
++   (tessellation activée), avec la lecture des sommets et le hull shader liés ; mesh shader de passage
++   du domain shader, avec le tessellateur et le domain shader liés ; shader de pixels. */
++static NTSTATUS
++_MTLDevice_newTessellationEmulationPipeline(void *obj) {
++  struct unixcall_mtldevice_newgeometrypso *params = obj;
++  const struct WMTTessellationEmulationPipelineInfo *info = params->info.ptr;
++  params->ret_pso = 0;
++  params->ret_error = 0;
++  id<MTLLibrary> stage_in_library = (id<MTLLibrary>)info->stage_in_library;
++  id<MTLLibrary> vertex_library = (id<MTLLibrary>)info->vertex_library;
++  id<MTLLibrary> hull_library = (id<MTLLibrary>)info->hull_library;
++  id<MTLLibrary> domain_library = (id<MTLLibrary>)info->domain_library;
++  NSError *err = NULL;
++  MTLFunctionConstantValues *object_constants = [[MTLFunctionConstantValues alloc] init];
++  BOOL tessellation = YES;
++  [object_constants setConstantValue:&tessellation type:MTLDataTypeBool withName:@"tessellationEnabled"];
++  MTLFunctionConstantValues *hull_constants = [[MTLFunctionConstantValues alloc] init];
++  int vertex_size = (int)info->vertex_output_size;
++  float max_factor = info->max_tessellation_factor;
++  [hull_constants setConstantValue:&vertex_size type:MTLDataTypeInt withName:@"vertex_shader_output_size_fc"];
++  [hull_constants setConstantValue:&max_factor type:MTLDataTypeFloat withName:@"max_tessellation_factor_fc"];
++
++  id<MTLFunction> stage_in = [stage_in_library newFunctionWithName:stage_in_library.functionNames.firstObject];
++  NSString *object_name = [NSString stringWithFormat:@"%s.dxil_irconverter_object_shader", info->vertex_function];
++  id<MTLFunction> object = [vertex_library newFunctionWithName:object_name constantValues:object_constants error:&err];
++  id<MTLFunction> hull = nil, tessellator = nil, domain = nil, mesh = nil;
++  if (object)
++    hull = [hull_library newFunctionWithName:@"irconverter_hull_shader" constantValues:hull_constants error:&err];
++  if (hull)
++    tessellator = [hull_library newFunctionWithName:@"irconverter_tessellator" constantValues:hull_constants error:&err];
++  if (tessellator)
++    domain = [domain_library newFunctionWithName:@"irconverter_dxil_domain_shader"];
++  if (domain)
++    mesh = [domain_library newFunctionWithName:[NSString stringWithUTF8String:info->passthrough_function]];
++  if (stage_in && object && hull && tessellator && domain && mesh) {
++    MTLMeshRenderPipelineDescriptor *descriptor = [[MTLMeshRenderPipelineDescriptor alloc] init];
++    fill_mesh_render_pipeline_descriptor(descriptor, &info->mesh);
++    descriptor.objectFunction = object;
++    descriptor.meshFunction = mesh;
++    descriptor.fragmentFunction = (id<MTLFunction>)info->fragment_function;
++    MTLLinkedFunctions *object_linked = [[MTLLinkedFunctions alloc] init];
++    object_linked.functions = @[ stage_in, hull ];
++    descriptor.objectLinkedFunctions = object_linked;
++    MTLLinkedFunctions *mesh_linked = [[MTLLinkedFunctions alloc] init];
++    mesh_linked.functions = @[ tessellator, domain ];
++    descriptor.meshLinkedFunctions = mesh_linked;
++    params->ret_pso = (obj_handle_t)[(id<MTLDevice>)params->device newRenderPipelineStateWithMeshDescriptor:descriptor
++                                                                                                    options:MTLPipelineOptionNone
++                                                                                                 reflection:nil
++                                                                                                      error:&err];
++    [object_linked release];
++    [mesh_linked release];
++    [descriptor release];
++  }
++  if (!params->ret_pso && err)
++    params->ret_error = (obj_handle_t)err;
++  [stage_in release];
++  [object release];
++  [hull release];
++  [tessellator release];
++  [domain release];
++  [mesh release];
++  [object_constants release];
++  [hull_constants release];
++  return STATUS_SUCCESS;
++}
++
+ /* Ambre : structures d'accélération (DirectX Raytracing). */
+ static MTLAttributeFormat
+ ambre_accel_vertex_format(uint32_t dxgi) {
+@@ -4059,6 +4178,7 @@ const void *__wine_unix_call_funcs[] = {
+     &_MTLAccelerationStructureCommandEncoder_encodeCommands,
+     &_IRConverter_newRayTracingLibrary,
+     &_MTLDevice_newRayTracingPipeline,
++    &_MTLDevice_newTessellationEmulationPipeline,
+ };
+ 
+ #ifndef DXMT_NATIVE
+@@ -4219,5 +4339,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
+     &_IRConverter_unsupported,
++    &_IRConverter_unsupported,
+ };
+ #endif
+diff --git a/src/winemetal/winemetal.h b/src/winemetal/winemetal.h
+index e0b12bc..5e16a8e 100644
+--- a/src/winemetal/winemetal.h
++++ b/src/winemetal/winemetal.h
+@@ -1418,6 +1418,8 @@ struct wmtcmd_render_draw_indexed_indirect {
+ 
+ struct wmtcmd_render_draw_meshthreadgroups {
+   enum WMTRenderCommandType type;
++  /* Ambre (0036) : reserved[0] = mémoire de groupe « object » à l'index 0, en octets (0 : aucune ;
++     tessellation émulée : 15 360, comme le runtime d'Apple). */
+   uint16_t reserved[3];
+   struct WMTMemoryPointer next;
+   struct WMTSize threadgroup_per_grid;
+@@ -2253,7 +2255,14 @@ struct WMTIRReflection2 {
+   uint32_t gs_input_primitive;
+   uint32_t gs_instance_count;
+   uint32_t gs_passthrough;
+-  uint32_t reserved[10];
++  /* Ambre (0036) : tessellation émulée (hull et domain shaders). */
++  uint32_t hs_max_patches_per_object;  /* patches par groupe « object » */
++  uint32_t hs_max_threads_per_patch;   /* fils « object » par patch */
++  uint32_t hs_input_control_points;    /* points de contrôle en entrée */
++  uint32_t hs_output_primitive;        /* IRTessellatorOutputPrimitive */
++  float hs_max_tessellation_factor;
++  uint32_t ds_max_input_primitives;    /* primitives par groupe « mesh » */
++  uint32_t reserved[4];
+ };
+ 
+ /* Rend la bibliothèque convertie et, pour des sommets émulés, celle de la lecture des sommets. */
+@@ -2278,6 +2287,26 @@ WINEMETAL_API obj_handle_t MTLDevice_newGeometryEmulationPipeline(
+     obj_handle_t device, const struct WMTGeometryEmulationPipelineInfo *info, obj_handle_t *err_out
+ );
+ 
++/* Ambre (0036) : pipeline mesh qui émule la tessellation (comme
++   IRRuntimeNewGeometryTessellationEmulationPipeline du runtime d'Apple, sans geometry shader :
++   mesh shader de passage du domain shader). */
++struct WMTTessellationEmulationPipelineInfo {
++  struct WMTMeshRenderPipelineInfo mesh; /* pièces jointes, mélange, formats ; fonctions ignorées */
++  obj_handle_t stage_in_library;
++  obj_handle_t vertex_library;
++  obj_handle_t hull_library;
++  obj_handle_t domain_library;
++  obj_handle_t fragment_function; /* ou 0 */
++  char vertex_function[128];
++  char passthrough_function[128]; /* irconverter_domain_shader_{triangle,line,point}_passthrough */
++  uint32_t vertex_output_size;
++  float max_tessellation_factor;
++};
++
++WINEMETAL_API obj_handle_t MTLDevice_newTessellationEmulationPipeline(
++    obj_handle_t device, const struct WMTTessellationEmulationPipelineInfo *info, obj_handle_t *err_out
++);
++
+ WINEMETAL_API void MTLTexture_getBytes(
+     obj_handle_t texture, struct WMTOrigin origin, struct WMTSize size, uint64_t level, uint64_t slice,
+     struct WMTMemoryPointer data, uint64_t bytes_per_row, uint64_t bytes_per_image
+diff --git a/src/winemetal/winemetal_thunks.c b/src/winemetal/winemetal_thunks.c
+index f12136c..4acbef6 100644
+--- a/src/winemetal/winemetal_thunks.c
++++ b/src/winemetal/winemetal_thunks.c
+@@ -1391,6 +1391,23 @@ MTLDevice_newGeometryEmulationPipeline(
+   return params.ret_pso;
+ }
+ 
++WINEMETAL_API obj_handle_t
++MTLDevice_newTessellationEmulationPipeline(
++    obj_handle_t device, const struct WMTTessellationEmulationPipelineInfo *info, obj_handle_t *err_out
++) {
++  /* Même forme d'appel que le pipeline geometry (appareil, description, pipeline, erreur). */
++  struct unixcall_mtldevice_newgeometrypso params;
++  params.device = device;
++  WMT_MEMPTR_SET(params.info, info);
++  params.ret_pso = 0;
++  params.ret_error = 0;
++  if (UNIX_CALL(156, &params))
++    return 0;
++  if (err_out)
++    *err_out = params.ret_error;
++  return params.ret_pso;
++}
++
+ WINEMETAL_API void
+ MTLDevice_accelerationStructureSizes(
+     obj_handle_t device, const struct WMTAccelDescriptor *descriptor, struct WMTAccelSizes *sizes
