@@ -1,0 +1,222 @@
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index 4e25515..8e19da6 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -149,7 +149,10 @@ public:
+     }
+ 
+     if constexpr (EnableMetalFX) {
+-      scale_factor = std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
++      // Ambre (0038) : AMBRE_METALFX_AUTO=1 → facteur = fenêtre ÷ image du jeu (ResizeBuffers).
++      metalfx_auto_ = env::getEnvVar("AMBRE_METALFX_AUTO") == "1";
++      scale_factor = metalfx_auto_ ? 1.0f
++                                   : std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
+     }
+ 
+     presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_,
+@@ -425,7 +428,13 @@ public:
+         selected_mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_UPPER_FIELD_FIRST ||
+             selected_mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_LOWER_FIELD_FIRST
+     };
+-    if (!wsi::setWindowMode(output_desc.Monitor, hWnd, wsi_mode))
++    // Ambre (0038) : résolution virtuelle (plus petite que l'écran) : le mode réel ne change pas,
++    // la fenêtre reste à la taille de l'écran et MetalFX agrandit l'image du jeu.
++    wsi::WsiMode native = {};
++    bool virtual_mode = env::getEnvVar("AMBRE_VIRTUAL_MODES") == "1" &&
++                        wsi::getCurrentDisplayMode(output_desc.Monitor, &native) && native.width &&
++                        selected_mode.Width <= native.width && selected_mode.Height <= native.height;
++    if (!virtual_mode && !wsi::setWindowMode(output_desc.Monitor, hWnd, wsi_mode))
+       return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+ 
+     *pDisplayMode = selected_mode;
+@@ -510,6 +519,17 @@ public:
+       backbuffer_desc_.Height = desc_.Height;
+     }
+ 
++    // Ambre (0038) : MetalFX automatique : l'image du jeu est agrandie à la taille de sa fenêtre.
++    if (metalfx_auto_) {
++      uint32_t window_width = 0, window_height = 0;
++      wsi::getWindowSize(hWnd, &window_width, &window_height);
++      float factor = 1.0f;
++      if (desc_.Width && desc_.Height && window_width && window_height)
++        factor = std::min(float(window_width) / desc_.Width, float(window_height) / desc_.Height);
++      scale_factor = factor < 1.02f ? 1.0f : std::min(factor, 2.0f);
++      presenter->changeScaleFactor(scale_factor);
++    }
++
+     ApplyLayerProps();
+ 
+     backbuffer_desc_.Format = desc_.Format;
+@@ -1101,6 +1121,7 @@ private:
+   std::conditional<EnableMetalFX, Rc<SpatialScaler>, std::monostate>::type metalfx_scaler;
+   std::conditional<EnableMetalFX, Com<D3D11ResourceCommon>, std::monostate>::type upscaled_backbuffer_;
+   float scale_factor = 1.0;
++  bool metalfx_auto_ = false; // Ambre (0038)
+ };
+ 
+ HRESULT
+diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
+index 4c67d8b..90deb4b 100644
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -149,6 +149,7 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D1
+      d3d11.metalSpatialUpscaleFactor comme en DirectX 11) : image du jeu → texture agrandie → écran. */
+   Rc<SpatialScaler> metalfx_scaler_;
+   WMT::Reference<WMT::Texture> upscaled_;
++  bool metalfx_auto_ = false;
+   HUDState hud;
+   double init_refresh_rate_ = DBL_MAX;
+   int preferred_max_frame_rate = 0;
+@@ -188,10 +189,14 @@ public:
+     }
+ 
+     if (env::getEnvVar("DXMT_METALFX_SPATIAL_SWAPCHAIN") == "1") {
+-      if (pDevice->GetMTLDevice().supportsFXSpatialScaler())
+-        scale_factor = std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
+-      else
++      if (pDevice->GetMTLDevice().supportsFXSpatialScaler()) {
++        // Ambre (0038) : AMBRE_METALFX_AUTO=1 → facteur = fenêtre ÷ image du jeu (ResizeBuffers).
++        metalfx_auto_ = env::getEnvVar("AMBRE_METALFX_AUTO") == "1";
++        scale_factor = metalfx_auto_ ? 1.0f
++                                     : std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
++      } else {
+         WARN("ambre-dx12: agrandissement MetalFX indisponible sur cette carte graphique");
++      }
+     }
+ 
+     presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_, lib, scale_factor, desc_.SampleDesc.Count));
+@@ -447,7 +452,13 @@ public:
+         selected_mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_UPPER_FIELD_FIRST ||
+             selected_mode.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_LOWER_FIELD_FIRST
+     };
+-    if (!wsi::setWindowMode(output_desc.Monitor, hWnd, wsi_mode))
++    // Ambre (0038) : résolution virtuelle (plus petite que l'écran) : le mode réel ne change pas,
++    // la fenêtre reste à la taille de l'écran et MetalFX agrandit l'image du jeu.
++    wsi::WsiMode native = {};
++    bool virtual_mode = env::getEnvVar("AMBRE_VIRTUAL_MODES") == "1" &&
++                        wsi::getCurrentDisplayMode(output_desc.Monitor, &native) && native.width &&
++                        selected_mode.Width <= native.width && selected_mode.Height <= native.height;
++    if (!virtual_mode && !wsi::setWindowMode(output_desc.Monitor, hWnd, wsi_mode))
+       return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+ 
+     *pDisplayMode = selected_mode;
+@@ -526,6 +537,17 @@ public:
+       backbuffer_desc_.Height = desc_.Height;
+     }
+ 
++    // Ambre (0038) : MetalFX automatique : l'image du jeu est agrandie à la taille de sa fenêtre.
++    if (metalfx_auto_) {
++      uint32_t window_width = 0, window_height = 0;
++      wsi::getWindowSize(hWnd, &window_width, &window_height);
++      float factor = 1.0f;
++      if (desc_.Width && desc_.Height && window_width && window_height)
++        factor = std::min(float(window_width) / desc_.Width, float(window_height) / desc_.Height);
++      scale_factor = factor < 1.02f ? 1.0f : std::min(factor, 2.0f);
++      presenter->changeScaleFactor(scale_factor);
++    }
++
+     ApplyLayerProps();
+ 
+     backbuffer_desc_.Format = desc_.Format;
+diff --git a/src/dxgi/dxgi_output.cpp b/src/dxgi/dxgi_output.cpp
+index 43acbd0..42495c0 100644
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -10,6 +10,7 @@
+ #include "dxmt_presenter.hpp"
+ #include "log/log.hpp"
+ #include "util_string.hpp"
++#include "util_env.hpp"
+ #include "wsi_monitor.hpp"
+ 
+ namespace dxmt {
+@@ -395,16 +396,32 @@ public:
+       if (devMode.bitsPerPixel != GetMonitorFormatBpp(EnumFormat))
+         continue;
+ 
+-      if (pDesc != nullptr) {
+-        DXGI_MODE_DESC1 mode = ConvertDisplayMode(devMode);
+-        // Fix up the DXGI_FORMAT to match what we were enumerating.
+-        mode.Format = EnumFormat;
++      DXGI_MODE_DESC1 mode = ConvertDisplayMode(devMode);
++      // Fix up the DXGI_FORMAT to match what we were enumerating.
++      mode.Format = EnumFormat;
++      modeList.push_back(mode);
++    }
+ 
+-        modeList.push_back(mode);
++    // Ambre (0038) : résolutions virtuelles (AMBRE_VIRTUAL_MODES=1, MetalFX automatique d'Allia) :
++    // 75 %, 67 %, 58 % et 50 % de l'écran. Choisies en plein écran, elles ne changent pas le mode réel
++    // de l'écran : MetalFX agrandit l'image du jeu à sa taille (voir ChangeDisplayMode des swapchains).
++    static const bool virtual_modes = env::getEnvVar("AMBRE_VIRTUAL_MODES") == "1";
++    wsi::WsiMode native = {};
++    if (virtual_modes && wsi::getCurrentDisplayMode(monitor_, &native) && native.width && native.height &&
++        native.bitsPerPixel == GetMonitorFormatBpp(EnumFormat)) {
++      for (double k : {0.75, 2.0 / 3.0, 0.58, 0.5}) {
++        DXGI_MODE_DESC1 mode = ConvertDisplayMode(native);
++        mode.Format = EnumFormat;
++        mode.Width = (UINT(native.width * k) + 1) & ~1u;
++        mode.Height = (UINT(native.height * k) + 1) & ~1u;
++        bool known = std::any_of(modeList.begin(), modeList.end(), [&](const DXGI_MODE_DESC1 &m) {
++          return m.Width == mode.Width && m.Height == mode.Height;
++        });
++        if (!known)
++          modeList.push_back(mode);
+       }
+-
+-      dstModeId += 1;
+     }
++    dstModeId = (uint32_t)modeList.size();
+ 
+     // Sort display modes by width, height and refresh rate,
+     // in that order. Some games rely on correct ordering.
+diff --git a/src/dxmt/dxmt_presenter.cpp b/src/dxmt/dxmt_presenter.cpp
+index 102c316..190f91c 100644
+--- a/src/dxmt/dxmt_presenter.cpp
++++ b/src/dxmt/dxmt_presenter.cpp
+@@ -19,6 +19,7 @@ Presenter::Presenter(WMT::Device device, WMT::MetalLayer layer, InternalCommandL
+   layer_props_.opaque = true;
+   layer_props_.display_sync_enabled = false;
+   layer_props_.framebuffer_only = false; // how strangely setting it true results in worse performance
++  base_contents_scale_ = layer_props_.contents_scale;
+   layer_props_.contents_scale = layer_props_.contents_scale * scale_factor;
+ 
+   WMTTextureInfo texture_info;
+@@ -55,6 +56,15 @@ Presenter::changeLayerProperties(
+   return should_invalidated;
+ }
+ 
++void
++Presenter::changeScaleFactor(float scale_factor) {
++  double scale = base_contents_scale_ * std::max(scale_factor, 1.0f);
++  if (layer_props_.contents_scale == scale)
++    return;
++  layer_props_.contents_scale = scale;
++  layer_.setProps(layer_props_);
++}
++
+ bool
+ Presenter::changeLayerColorSpace(WMTColorSpace colorspace) {
+   bool should_invalidated = colorspace_ != colorspace;
+diff --git a/src/dxmt/dxmt_presenter.hpp b/src/dxmt/dxmt_presenter.hpp
+index dc4d42c..d30add9 100644
+--- a/src/dxmt/dxmt_presenter.hpp
++++ b/src/dxmt/dxmt_presenter.hpp
+@@ -36,6 +36,9 @@ public:
+ 
+   bool changeLayerColorSpace(WMTColorSpace colorspace);
+ 
++  /* Ambre (0038) : facteur d'agrandissement MetalFX changé en cours de jeu (MetalFX automatique). */
++  void changeScaleFactor(float scale_factor);
++
+   void changeHDRMetadata(const WMTHDRMetadata *metadata);
+ 
+   void changeGammaRamp(const DXMTGammaRamp *gamma_ramp);
+@@ -80,6 +83,7 @@ private:
+   WMT::MetalLayer layer_;
+   InternalCommandLibrary &lib_;
+   WMTLayerProps layer_props_;
++  double base_contents_scale_ = 1.0; // Ambre (0038) : échelle de la couche avant agrandissement
+   uint32_t sample_count_;
+   WMTColorSpace colorspace_ = WMTColorSpaceSRGB;
+   WMTHDRMetadata hdr_metadata_;

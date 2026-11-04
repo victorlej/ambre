@@ -168,6 +168,12 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      d3d11.metalSpatialUpscaleFactor comme en DirectX 11). Texture agrandie et agrandisseur recréés à
      chaque ResizeBuffers ; à la présentation : barrière, encodeSpatialScale, puis affichage de
      l'image agrandie (la présentation attend la barrière de l'agrandisseur).
+0038 MetalFX automatique (pour le réglage « MetalFX : Auto » d'Allia) : AMBRE_METALFX_AUTO=1 → facteur
+     d'agrandissement = taille de la fenêtre ÷ taille de l'image du jeu, recalculé à chaque
+     ResizeBuffers (DirectX 11 et 12 ; Presenter::changeScaleFactor), 2 au plus.
+     AMBRE_VIRTUAL_MODES=1 → la sortie DXGI propose en plus 75 %, 67 %, 58 % et 50 % de l'écran ; en
+     plein écran, une résolution plus petite que l'écran ne change plus le mode réel (la fenêtre reste
+     à la taille de l'écran, MetalFX agrandit l'image du jeu, sans flou d'étirement de macOS).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
