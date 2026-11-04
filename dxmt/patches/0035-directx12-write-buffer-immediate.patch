@@ -1,0 +1,85 @@
+diff --git a/src/d3d12/d3d12_command_list.cpp b/src/d3d12/d3d12_command_list.cpp
+index 9ee51a1..589afb3 100644
+--- a/src/d3d12/d3d12_command_list.cpp
++++ b/src/d3d12/d3d12_command_list.cpp
+@@ -269,11 +269,23 @@ kernel void ambre_accel_write(uint tid [[thread_position_in_grid]], constant Amb
+   if (tid < a.count)
+     a.dst[tid] = a.values[tid];
+ }
++struct AmbreImmediateArgs {
++  ulong dst[8];
++  uint values[8];
++  uint count;
++  uint pad;
++};
++// WriteBufferImmediate : une valeur de 32 bits par fil, chacune à sa propre adresse GPU.
++kernel void ambre_write_immediate(uint tid [[thread_position_in_grid]], constant AmbreImmediateArgs &a [[buffer(30)]]) {
++  if (tid < a.count)
++    *(device uint *)(a.dst[tid]) = a.values[tid];
++}
+ )";
+ 
+ struct AmbreAccelPipelines {
+   WMT::Reference<WMT::ComputePipelineState> instances;
+   WMT::Reference<WMT::ComputePipelineState> write;
++  WMT::Reference<WMT::ComputePipelineState> immediate;
+   bool tried = false;
+ };
+ 
+@@ -296,6 +308,8 @@ AmbreAccel(WMT::Device device) {
+   pipelines.instances = device.newComputePipelineState(instances, err);
+   auto write = library.newFunction("ambre_accel_write");
+   pipelines.write = device.newComputePipelineState(write, err);
++  auto immediate = library.newFunction("ambre_write_immediate");
++  pipelines.immediate = device.newComputePipelineState(immediate, err);
+   if (!pipelines.instances || !pipelines.write)
+     ERR("ambre-dx12: noyaux de structures d'acceleration incomplets");
+   return pipelines;
+@@ -319,6 +333,13 @@ struct AmbreAccelWriteArgs {
+   uint32_t pad;
+ };
+ 
++struct AmbreImmediateArgs {
++  uint64_t dst[8];
++  uint32_t values[8];
++  uint32_t count;
++  uint32_t pad;
++};
++
+ // `Graphics`CommandList is a really confusing name
+ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList> {
+ 
+@@ -2330,7 +2351,32 @@ public:
+   WriteBufferImmediate(
+       UINT Count, const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER *pParams, const D3D12_WRITEBUFFERIMMEDIATE_MODE *pModes
+   ) {
+-    IMPLEMENT_ME
++    // Ambre : marqueurs d'avancement du GPU (Elden Ring s'en sert pour détecter un GPU bloqué, et
++    // quittait faute de les voir écrits). Les modes MARKER_IN / MARKER_OUT règlent seulement l'ordre
++    // par rapport aux commandes voisines : une passe de calcul à sa place dans la liste le respecte.
++    (void)pModes;
++    if (!Count || !pParams)
++      return;
++    auto &pipelines = AmbreAccel(device_->GetMTLDevice());
++    if (!pipelines.immediate) {
++      static bool warned = false;
++      if (!warned) {
++        warned = true;
++        ERR("ambre-dx12: WriteBufferImmediate sans noyau Metal (ecritures ignorees)");
++      }
++      return;
++    }
++    for (UINT first = 0; first < Count; first += 8) {
++      AmbreImmediateArgs args = {};
++      for (UINT i = first; i < Count && args.count < 8; i++) {
++        if (!pParams[i].Dest)
++          continue;
++        args.dst[args.count] = pParams[i].Dest;
++        args.values[args.count] = pParams[i].Value;
++        args.count++;
++      }
++      AmbreAccelCompute(pipelines.immediate, &args, sizeof(args), args.count);
++    }
+   }
+ 
+   /* Ambre : ID3D12GraphicsCommandList3 / 4 — DirectX Raytracing (structures d'accélération). */
