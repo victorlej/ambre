@@ -1,0 +1,167 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index e8c6c26..dca94d8 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -422,17 +422,38 @@ public:
+   }
+ 
+   HRESULT
+-  Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
++  Present(
++      Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after, SpatialScaler *scaler,
++      WMT::Texture upscaled
++  ) {
+     auto scope = StartCommitting();
+     auto &cmdbuf = scope.inflight.cmdbuf;
+ 
+     auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
+     auto &view = g->texture->view(g->texture->fullView);
+ 
++    // Ambre (0037) : agrandissement MetalFX (comme EncoderType::SpatialUpscale en DirectX 11) :
++    // après le travail du jeu, avant l'affichage, l'image agrandie remplace celle du jeu.
++    WMT::Texture source = view.texture;
++    bool scaled = scaler && upscaled;
++    if (scaled) {
++      auto begin = cmdbuf.blitCommandEncoder();
++      begin.waitForFence(fence_);
++      begin.updateFence(scaler->fence());
++      begin.endEncoding();
++      cmdbuf.encodeSpatialScale(scaler->scaler(), view.texture, upscaled, scaler->fence());
++      source = upscaled;
++    }
++
++    // L'affichage attend la fin de l'agrandissement s'il y en a un, sinon le travail du jeu.
++    WMT::Fence wait_before_present = fence_;
++    if (scaled)
++      wait_before_present = scaler->fence();
++
+     auto state = presenter->synchronizeLayerProperties();
+     auto drawable = presenter->encodeCommands(
+-        cmdbuf, view.texture, state.metadata,
+-        [&](auto encoder) { encoder.waitForFence(fence_, WMTRenderStageFragment); },
++        cmdbuf, source, state.metadata,
++        [&](auto encoder) { encoder.waitForFence(wait_before_present, WMTRenderStageFragment); },
+         [&](auto encoder) { encoder.updateFence(fence_, WMTRenderStageFragment); }
+     );
+ 
+diff --git a/src/d3d12/d3d12_device.hpp b/src/d3d12/d3d12_device.hpp
+index 56e82d6..449a055 100644
+--- a/src/d3d12/d3d12_device.hpp
++++ b/src/d3d12/d3d12_device.hpp
+@@ -28,6 +28,7 @@
+ #include "dxgi_interfaces.h"
+ #include "airconv_public.h"
+ #include "dxmt_buffer.hpp"
++#include "dxmt_scaler.hpp"
+ #include "dxmt_command.hpp"
+ #include "dxmt_fence.hpp"
+ #include "dxmt_format.hpp"
+@@ -60,7 +61,10 @@ public:
+ 
+ class MTLD3D12CommandQueue : public ID3D12CommandQueue {
+ public:
+-  virtual HRESULT Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) = 0;
++  /* Ambre (0037) : `scaler` et `upscaled` (facultatifs) : l'image passe par l'agrandisseur MetalFX
++     avant d'être affichée. */
++  virtual HRESULT Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after,
++                          SpatialScaler *scaler = nullptr, WMT::Texture upscaled = {}) = 0;
+ };
+ 
+ class MTLD3D12Resource : public ID3D12Resource {
+diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
+index 4516090..8950b95 100644
+--- a/src/d3d12/d3d12_swapchain.cpp
++++ b/src/d3d12/d3d12_swapchain.cpp
+@@ -21,6 +21,7 @@
+ #include "dxgi_object.hpp"
+ #include "dxmt_hud_state.hpp"
+ #include "dxmt_presenter.hpp"
++#include "dxmt_scaler.hpp"
+ #include "dxmt_ambre.hpp"
+ #include "dxmt_info.hpp"
+ #include "com/com_pointer.hpp"
+@@ -143,6 +144,10 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D1
+   uint32_t frame_latency;
+   DXGI_COLOR_SPACE_TYPE colorspace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+   float scale_factor = 1.0;
++  /* Ambre (0037) : agrandissement MetalFX (DXMT_METALFX_SPATIAL_SWAPCHAIN=1, facteur
++     d3d11.metalSpatialUpscaleFactor comme en DirectX 11) : image du jeu → texture agrandie → écran. */
++  Rc<SpatialScaler> metalfx_scaler_;
++  WMT::Reference<WMT::Texture> upscaled_;
+   HUDState hud;
+   double init_refresh_rate_ = DBL_MAX;
+   int preferred_max_frame_rate = 0;
+@@ -181,6 +186,13 @@ public:
+       abort();
+     }
+ 
++    if (env::getEnvVar("DXMT_METALFX_SPATIAL_SWAPCHAIN") == "1") {
++      if (pDevice->GetMTLDevice().supportsFXSpatialScaler())
++        scale_factor = std::max(Config::getInstance().getOption<float>("d3d11.metalSpatialUpscaleFactor", 2), 1.0f);
++      else
++        WARN("ambre-dx12: agrandissement MetalFX indisponible sur cette carte graphique");
++    }
++
+     presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_, lib, scale_factor, desc_.SampleDesc.Count));
+ 
+     frame_latency = kSwapchainLatency;
+@@ -537,6 +549,48 @@ public:
+       backbuffers_.push_back(reinterpret_cast<MTLD3D12Resource *>(backbuffer.ptr()));
+     }
+ 
++    // Ambre (0037) : texture agrandie et agrandisseur MetalFX à la nouvelle taille.
++    metalfx_scaler_ = nullptr;
++    upscaled_ = {};
++    if (scale_factor > 1.0f && !backbuffers_.empty()) {
++      auto metal = device_->GetMTLDevice();
++      auto format = backbuffers_[0]->texture->pixelFormat();
++      uint32_t width = (uint32_t)(backbuffer_desc_.Width * scale_factor);
++      uint32_t height = (uint32_t)(backbuffer_desc_.Height * scale_factor);
++      WMTTextureInfo info;
++      info.type = WMTTextureType2D;
++      info.pixel_format = format;
++      info.usage = (WMTTextureUsage)(WMTTextureUsageRenderTarget | WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite);
++      info.options = WMTResourceStorageModePrivate;
++      info.width = width;
++      info.height = height;
++      info.depth = 1;
++      info.mipmap_level_count = 1;
++      info.sample_count = 1;
++      info.array_length = 1;
++      upscaled_ = metal.newTexture(info);
++      WMTFXSpatialScalerInfo scaler_info;
++      scaler_info.color_format = format;
++      scaler_info.output_format = format;
++      scaler_info.input_width = (uint32_t)backbuffer_desc_.Width;
++      scaler_info.input_height = backbuffer_desc_.Height;
++      scaler_info.output_width = width;
++      scaler_info.output_height = height;
++      if (upscaled_)
++        metalfx_scaler_ = new SpatialScaler(metal, scaler_info);
++      if (!metalfx_scaler_ || !metalfx_scaler_->scaler()) {
++        ERR("ambre-dx12: agrandisseur MetalFX non cree (", backbuffer_desc_.Width, "x", backbuffer_desc_.Height, " -> ",
++            width, "x", height, ") : affichage sans agrandissement");
++        metalfx_scaler_ = nullptr;
++        upscaled_ = {};
++      } else {
++        static std::atomic<uint32_t> reported = 0;
++        if (reported++ < 5)
++          WARN("ambre-dx12: agrandissement MetalFX ", backbuffer_desc_.Width, "x", backbuffer_desc_.Height, " -> ", width,
++               "x", height);
++      }
++    }
++
+     return S_OK;
+   };
+ 
+@@ -720,7 +774,9 @@ public:
+     );
+ 
+     auto &backbuffer = backbuffers_[presentation_count_ % backbuffers_.size()];
+-    hr = queue_->Present(this->presenter.ptr(), backbuffer.ptr(), present_semaphore_, vsync_duration);
++    hr = queue_->Present(
++        this->presenter.ptr(), backbuffer.ptr(), present_semaphore_, vsync_duration, metalfx_scaler_.ptr(), upscaled_
++    );
+ 
+     presentation_count_ += 1;
+ 

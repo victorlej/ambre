@@ -164,6 +164,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      dessin des listes de patches par groupes mesh. Échec de création : pipeline désactivé comme
      avant. AMBRE_DX12_TESSELLATION=0 la coupe. Vérifié par l'essai natif d'Ambre Pro
      tests/tess/tessrun.m (triangle tessellé, facteurs 1 à 8 : couverture complète).
+0037 DirectX 12 : agrandissement MetalFX du swapchain (DXMT_METALFX_SPATIAL_SWAPCHAIN=1, facteur
+     d3d11.metalSpatialUpscaleFactor comme en DirectX 11). Texture agrandie et agrandisseur recréés à
+     chaque ResizeBuffers ; à la présentation : barrière, encodeSpatialScale, puis affichage de
+     l'image agrandie (la présentation attend la barrière de l'agrandisseur).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
