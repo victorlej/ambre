@@ -1,0 +1,106 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index c80d1bf..6af4484 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -98,33 +98,65 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+     InflightCommandBuffer &inflight;
+     WMT::Reference<WMT::Object> pool;
+ 
+-    CommittingScope(MTLD3D12CommandQueueImpl *queue) :
++    bool flush;
++
++    /* Ambre (0040) : un lot Metal reste ouvert entre plusieurs envois (ExecuteCommandLists, Wait) et
++       n'est validé qu'au besoin (Signal, présentation, 24 listes) : Elden Ring envoyait ~1 400 lots/s
++       (puce graphique occupée 72 %, jeu bloqué « file pleine » 60 % du temps). */
++    CommittingScope(MTLD3D12CommandQueueImpl *queue, bool flush) :
+         queue(queue),
+         lock(queue->mutex_commit_),
+         seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
+         inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
+-        pool(WMT::MakeAutoreleasePool()) {
+-      inflight.cmdbuf = queue->queue_.commandBuffer();
++        pool(WMT::MakeAutoreleasePool()),
++        flush(flush || !queue->batch_) {
++      if (!queue->open_) {
++        queue->WaitForFreeSlot();
++        inflight.cmdbuf = queue->queue_.commandBuffer();
++        queue->open_ = true;
++        queue->open_lists_ = 0;
++      }
+     };
+ 
+     ~CommittingScope() {
+-      inflight.cmdbuf.commit();
+-      queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
+-      queue->inflight_cmdbuf_seq_.notify_one();
+-      queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
++      if (!flush && ++queue->open_lists_ < kBatchLists)
++        return;
++      queue->CommitOpen();
+     }
+   };
+ 
+-  CommittingScope
+-  StartCommitting() {
++  static constexpr uint32_t kBatchLists = 24;
++  bool batch_ = env::getEnvVar("AMBRE_DX12_BATCH") != "0";
++  bool open_ = false;          // un lot est ouvert (pas encore validé)
++  uint32_t open_lists_ = 0;    // envois regroupés dans le lot ouvert
++
++  // Valide le lot ouvert (verrou mutex_commit_ tenu).
++  void
++  CommitOpen() {
++    if (!open_)
++      return;
++    uint64_t seq = inflight_cmdbuf_seq_.load(std::memory_order_relaxed);
++    inflight_cmdbuf_pool_[seq % kCommandQueueSize].cmdbuf.commit();
++    open_ = false;
++    inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
++    inflight_cmdbuf_seq_.notify_one();
++    inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
++  }
++
++  void
++  WaitForFreeSlot() {
+     if (inflight_cmdbuf_count_.load(std::memory_order_acquire) >= kCommandQueueSize) {
+       // File pleine : le jeu attend la puce graphique (relevé A2).
+       auto start = std::chrono::steady_clock::now();
+       inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+       perf_full_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+     }
++  }
++
++  CommittingScope
++  StartCommitting(bool flush = true) {
+     perf_syncs_++;
+-    return CommittingScope(this);
++    return CommittingScope(this, flush);
+   }
+ 
+   /* Ambre (0039) : relevé de performances (étude A2), toutes les 10 s dans le journal :
+@@ -181,6 +213,7 @@ public:
+ 
+   ~MTLD3D12CommandQueueImpl() {
+     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
++    CommitOpen();
+     inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
+     inflight_cmdbuf_seq_.notify_one();
+     inflight_cmdbuf_wait_thread_.join();
+@@ -266,7 +299,7 @@ public:
+         total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+       }
+     } encode_timer{perf_encode_ns_};
+-    auto scope = StartCommitting();
++    auto scope = StartCommitting(false);
+     auto &cmdbuf = scope.inflight.cmdbuf;
+     for (unsigned i = 0; i < Count; i++) {
+       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+@@ -445,7 +478,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Wait(ID3D12Fence *pFence, UINT64 Value) {
+-    auto scope = StartCommitting();
++    auto scope = StartCommitting(false);
+     auto &cmdbuf = scope.inflight.cmdbuf;
+     static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
+     return S_OK;

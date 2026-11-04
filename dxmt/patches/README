@@ -180,6 +180,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      où la puce graphique exécute chaque file (GPUStartTime/EndTime des lots), lots et envois par
      seconde, temps de préparation des lots sur le fil du jeu, attentes « file pleine », pipelines
      créés pendant la partie (durée totale et la plus longue).
+0040 DirectX 12 : envois regroupés. ExecuteCommandLists et Wait s'ajoutent au lot Metal ouvert ;
+     il n'est validé qu'au Signal, à la présentation ou après 24 envois (AMBRE_DX12_BATCH=0 : un lot
+     par envoi, comme avant). Elden Ring (relevé 0039) : ~1 400 lots/s, puce graphique occupée 72 %,
+     jeu bloqué « file pleine » 60 % du temps.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
