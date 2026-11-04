@@ -69,18 +69,19 @@ index 56e82d6..449a055 100644
  
  class MTLD3D12Resource : public ID3D12Resource {
 diff --git a/src/d3d12/d3d12_swapchain.cpp b/src/d3d12/d3d12_swapchain.cpp
-index 4516090..8950b95 100644
+index 4516090..4c67d8b 100644
 --- a/src/d3d12/d3d12_swapchain.cpp
 +++ b/src/d3d12/d3d12_swapchain.cpp
-@@ -21,6 +21,7 @@
+@@ -21,6 +21,8 @@
  #include "dxgi_object.hpp"
  #include "dxmt_hud_state.hpp"
  #include "dxmt_presenter.hpp"
 +#include "dxmt_scaler.hpp"
++#include "util_env.hpp"
  #include "dxmt_ambre.hpp"
  #include "dxmt_info.hpp"
  #include "com/com_pointer.hpp"
-@@ -143,6 +144,10 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D1
+@@ -143,6 +145,10 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IDXGISwapChain4, MTLD3D1
    uint32_t frame_latency;
    DXGI_COLOR_SPACE_TYPE colorspace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
    float scale_factor = 1.0;
@@ -91,7 +92,7 @@ index 4516090..8950b95 100644
    HUDState hud;
    double init_refresh_rate_ = DBL_MAX;
    int preferred_max_frame_rate = 0;
-@@ -181,6 +186,13 @@ public:
+@@ -181,6 +187,13 @@ public:
        abort();
      }
  
@@ -105,7 +106,7 @@ index 4516090..8950b95 100644
      presenter = Rc(new Presenter(pDevice->GetMTLDevice(), layer_weak_, lib, scale_factor, desc_.SampleDesc.Count));
  
      frame_latency = kSwapchainLatency;
-@@ -537,6 +549,48 @@ public:
+@@ -537,6 +550,48 @@ public:
        backbuffers_.push_back(reinterpret_cast<MTLD3D12Resource *>(backbuffer.ptr()));
      }
  
@@ -154,7 +155,7 @@ index 4516090..8950b95 100644
      return S_OK;
    };
  
-@@ -720,7 +774,9 @@ public:
+@@ -720,7 +775,9 @@ public:
      );
  
      auto &backbuffer = backbuffers_[presentation_count_ % backbuffers_.size()];
