@@ -74,6 +74,7 @@ jobs:
             ms/deps/prefix
             ms/deps/stamps
             ms/toolchain
+            ms/install
           key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
           restore-keys: ambre3-deps-${{ inputs.ref }}-
 
@@ -85,6 +86,13 @@ jobs:
           # La recette fixe 10 tâches en parallèle ; la machine de GitHub n'a que 3 cœurs et 7 Go.
           sed -i '' 's/^export JOBS=10$/export JOBS=${JOBS:-10}/' scripts/env.sh
           export JOBS=4
+          # FEX : CMake fait analyser les sources C++ (modules) par clang-scan-deps, qui, appelé par
+          # le lien de toolchain/mingw-shims, ne trouve ni la libc ni libc++ ; FEX n'a pas de modules.
+          sed -i '' 's/-DCMAKE_BUILD_TYPE=Release /-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF /' scripts/build-fex.sh
+          grep -q SCAN_FOR_MODULES scripts/build-fex.sh
+          # Wine déjà compilé et installé lors d'un essai précédent (gardé dans install/) : on le reprend.
+          sed -i '' 's|^zsh \$S/build-wine.sh$|[[ -x ${0:A:h:h}/install/bin/wine ]] \&\& echo "wine : repris" \|\| zsh $S/build-wine.sh|' scripts/build-all.sh
+          grep -n "build-wine" scripts/build-all.sh
           zsh scripts/build-all.sh
 
       - name: Sauvegarde des dépendances
@@ -95,6 +103,7 @@ jobs:
             ms/deps/prefix
             ms/deps/stamps
             ms/toolchain
+            ms/install
           key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
 
       - name: Journaux en cas d'échec
