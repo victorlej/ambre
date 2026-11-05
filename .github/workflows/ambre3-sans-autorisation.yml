@@ -63,7 +63,10 @@ jobs:
 
       - name: Compilation complète (dépendances, ARM64X, Wine, FEX, tests, paquet)
         working-directory: ms
-        run: zsh scripts/build-all.sh
+        run: |
+          # Dossiers de travail que la recette suppose existants (ignorés par son .gitignore).
+          mkdir -p logs downloads deps build install dist prefixes
+          zsh scripts/build-all.sh
 
       - name: Contenu
         if: always()
