@@ -64,12 +64,56 @@ jobs:
       - name: Outils Homebrew
         run: brew install cmake ninja meson pkgconf autoconf automake libtool bison flex nasm gettext gperf
 
+      # Dépendances déjà compilées (≈ 2 h) et chaîne ARM64EC gardées d'un essai à l'autre : la recette
+      # saute chaque paquet marqué terminé (deps/stamps).
+      - name: Reprise des dépendances
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ms/deps/prefix
+            ms/deps/stamps
+            ms/toolchain
+          key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
+          restore-keys: ambre3-deps-${{ inputs.ref }}-
+
       - name: Compilation complète (dépendances, ARM64X, Wine, FEX, tests, paquet)
         working-directory: ms
         run: |
           # Dossiers de travail que la recette suppose existants (ignorés par son .gitignore).
-          mkdir -p logs downloads deps build install dist prefixes
+          mkdir -p logs downloads deps/stamps build install dist prefixes
+          # La recette fixe 10 tâches en parallèle ; la machine de GitHub n'a que 3 cœurs et 7 Go.
+          sed -i '' 's/^export JOBS=10$/export JOBS=${JOBS:-10}/' scripts/env.sh
+          export JOBS=4
           zsh scripts/build-all.sh
+
+      - name: Sauvegarde des dépendances
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ms/deps/prefix
+            ms/deps/stamps
+            ms/toolchain
+          key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
+
+      - name: Journaux en cas d'échec
+        if: failure()
+        working-directory: ms
+        run: |
+          for f in logs/*.log; do
+            echo "::group::$f"
+            grep -nE "error:|Error [0-9]|\*\*\*|fatal|undefined" "$f" | head -60 || true
+            tail -40 "$f"
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ambre3-journaux-${{ inputs.ref }}
+          path: ms/logs
+          retention-days: 7
 
       - name: Contenu
         if: always()
