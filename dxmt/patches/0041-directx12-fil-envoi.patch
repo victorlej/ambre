@@ -1,0 +1,210 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index 6af4484..099d856 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -27,6 +27,9 @@
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
+ #include <chrono>
++#include <deque>
++#include <functional>
++#include <vector>
+ #include <string>
+ #include <algorithm>
+ 
+@@ -125,6 +128,67 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+     }
+   };
+ 
++  /* Ambre (0041) : fil d'envoi. Le jeu ne traduit plus ses listes en commandes Metal lui-même
++     (Elden Ring après 0040 : 400 à 580 ms/s du fil du jeu, puce graphique encore à ~75 %) : chaque
++     envoi (listes, Signal, Wait, présentation) est mis dans une file traitée dans l'ordre par un fil
++     à part. Le jeu attend s'il a plus de deux images d'avance. AMBRE_DX12_ASYNC=0 : comme avant. */
++  bool async_ = env::getEnvVar("AMBRE_DX12_ASYNC") != "0";
++  dxmt::mutex submit_mutex_;
++  std::deque<std::function<void()>> submit_tasks_;
++  std::atomic<uint64_t> submit_pushed_{0}, submit_done_{0}, submit_presents_{0};
++  std::atomic<bool> submit_stop_{false};
++  std::unique_ptr<dxmt::thread> submit_thread_;
++
++  void
++  Submit(std::function<void()> task, bool present = false) {
++    if (!async_) {
++      task();
++      return;
++    }
++    if (present) {
++      // Pas plus de deux images d'avance sur le fil d'envoi.
++      uint64_t pending;
++      while ((pending = submit_presents_.load(std::memory_order_acquire)) >= 2)
++        submit_presents_.wait(pending, std::memory_order_acquire);
++      submit_presents_.fetch_add(1, std::memory_order_acq_rel);
++      task = [task = std::move(task), this]() {
++        task();
++        submit_presents_.fetch_sub(1, std::memory_order_acq_rel);
++        submit_presents_.notify_all();
++      };
++    }
++    {
++      std::lock_guard<dxmt::mutex> lock(submit_mutex_);
++      submit_tasks_.push_back(std::move(task));
++    }
++    submit_pushed_.fetch_add(1, std::memory_order_release);
++    submit_pushed_.notify_one();
++  }
++
++  void
++  SubmitThread() {
++    env::setThreadName("ambre-d3d12-submit");
++    uint64_t seen = 0;
++    for (;;) {
++      submit_pushed_.wait(seen, std::memory_order_acquire);
++      seen = submit_pushed_.load(std::memory_order_acquire);
++      for (;;) {
++        std::function<void()> task;
++        {
++          std::lock_guard<dxmt::mutex> lock(submit_mutex_);
++          if (submit_tasks_.empty())
++            break;
++          task = std::move(submit_tasks_.front());
++          submit_tasks_.pop_front();
++        }
++        task();
++        submit_done_.fetch_add(1, std::memory_order_release);
++      }
++      if (submit_stop_.load(std::memory_order_acquire))
++        return;
++    }
++  }
++
+   static constexpr uint32_t kBatchLists = 24;
+   bool batch_ = env::getEnvVar("AMBRE_DX12_BATCH") != "0";
+   bool open_ = false;          // un lot est ouvert (pas encore validé)
+@@ -212,6 +276,12 @@ public:
+       inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
+ 
+   ~MTLD3D12CommandQueueImpl() {
++    if (submit_thread_) {
++      submit_stop_.store(true, std::memory_order_release);
++      submit_pushed_.fetch_add(1, std::memory_order_release);
++      submit_pushed_.notify_one();
++      submit_thread_->join();
++    }
+     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
+     CommitOpen();
+     inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
+@@ -229,6 +299,8 @@ public:
+     queue_ = metal_device.newCommandQueue(kCommandQueueSize);
+     if (!queue_)
+       return E_FAIL;
++    if (async_)
++      submit_thread_ = std::make_unique<dxmt::thread>([this]() { this->SubmitThread(); });
+     queue_.addResidencySet(device_->GetGlobalResidencySet());
+ 
+     fence_ = metal_device.newFence();
+@@ -291,7 +363,21 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+-    // Relevé A2 : temps du fil du jeu passé à traduire ses listes en commandes Metal.
++    // Ambre (0041) : on garde la première commande de chaque liste (dans la mémoire de son allocateur,
++    // qui ne bouge pas et que le jeu ne peut vider qu'après la fin du travail sur la puce), pas la
++    // tête de liste (rangée dans un tableau qui peut être déplacé quand le jeu enregistre la suivante).
++    std::vector<EncoderData *> lists;
++    lists.reserve(Count);
++    for (unsigned i = 0; i < Count; i++) {
++      auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
++      lists.push_back(pCommandList->entry ? pCommandList->entry->next : nullptr);
++    }
++    Submit([this, lists = std::move(lists)]() { EncodeCommandLists(lists); });
++  }
++
++  void
++  EncodeCommandLists(const std::vector<EncoderData *> &lists) {
++    // Relevé A2 : temps passé à traduire les listes en commandes Metal (fil d'envoi depuis 0041).
+     struct EncodeTimer {
+       std::atomic<uint64_t> &total;
+       std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+@@ -301,9 +387,8 @@ public:
+     } encode_timer{perf_encode_ns_};
+     auto scope = StartCommitting(false);
+     auto &cmdbuf = scope.inflight.cmdbuf;
+-    for (unsigned i = 0; i < Count; i++) {
+-      auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+-      EncoderData *current = pCommandList->entry;
++    for (EncoderData *first : lists) {
++      EncoderData *current = first;
+       EncoderType ambre_previous = EncoderType::Null; // 0027 : encodeur précédent (dans cette liste)
+       for (EncoderData *ambre_prev = nullptr; current; ambre_prev = current, current = current->next) {
+         if (ambre_prev && ambre_prev->type != EncoderType::Null)
+@@ -470,17 +555,21 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Signal(ID3D12Fence *pFence, UINT64 Value) {
+-    auto scope = StartCommitting();
+-    auto &cmdbuf = scope.inflight.cmdbuf;
+-    static_cast<MTLD3D12Fence *>(pFence)->fence->signal(cmdbuf, Value);
++    Rc<Fence> fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
++    Submit([this, fence, Value]() mutable {
++      auto scope = StartCommitting();
++      fence->signal(scope.inflight.cmdbuf, Value);
++    });
+     return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   Wait(ID3D12Fence *pFence, UINT64 Value) {
+-    auto scope = StartCommitting(false);
+-    auto &cmdbuf = scope.inflight.cmdbuf;
+-    static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
++    Rc<Fence> fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
++    Submit([this, fence, Value]() mutable {
++      auto scope = StartCommitting(false);
++      fence->wait(scope.inflight.cmdbuf, Value);
++    });
+     return S_OK;
+   };
+ 
+@@ -524,6 +613,25 @@ public:
+   Present(
+       Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after, SpatialScaler *scaler,
+       WMT::Texture upscaled
++  ) {
++    // Ambre (0041) : propriétés de la couche lues sur le fil du jeu (comme en DirectX 11), image
++    // présentée sur le fil d'envoi, dans l'ordre du travail du jeu. Références gardées jusque-là.
++    auto state = presenter->synchronizeLayerProperties();
++    Submit(
++        [this, presenter = Rc<Presenter>(presenter), backbuffer = Com<ID3D12Resource>(backbuffer), hLantecyWaitable, after,
++         scaler = Rc<SpatialScaler>(scaler), upscaled = WMT::Reference<WMT::Texture>(upscaled), state]() mutable {
++          EncodePresent(presenter.ptr(), backbuffer.ptr(), hLantecyWaitable, after, scaler.ptr(), upscaled, state);
++        },
++        true
++    );
++    return S_OK;
++  }
++
++  template <typename State>
++  void
++  EncodePresent(
++      Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after, SpatialScaler *scaler,
++      WMT::Texture upscaled, State &state
+   ) {
+     auto scope = StartCommitting();
+     auto &cmdbuf = scope.inflight.cmdbuf;
+@@ -549,7 +657,6 @@ public:
+     if (scaled)
+       wait_before_present = scaler->fence();
+ 
+-    auto state = presenter->synchronizeLayerProperties();
+     auto drawable = presenter->encodeCommands(
+         cmdbuf, source, state.metadata,
+         [&](auto encoder) { encoder.waitForFence(wait_before_present, WMTRenderStageFragment); },
+@@ -561,8 +668,6 @@ public:
+     else
+       cmdbuf.presentDrawable(drawable);
+     scope.inflight.semaphore = hLantecyWaitable;
+-
+-    return S_OK;
+   }
+ };
+ 

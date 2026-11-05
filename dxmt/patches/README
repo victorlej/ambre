@@ -184,6 +184,11 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      il n'est validé qu'au Signal, à la présentation ou après 24 envois (AMBRE_DX12_BATCH=0 : un lot
      par envoi, comme avant). Elden Ring (relevé 0039) : ~1 400 lots/s, puce graphique occupée 72 %,
      jeu bloqué « file pleine » 60 % du temps.
+0041 DirectX 12 : fil d'envoi par file de commandes. ExecuteCommandLists, Signal, Wait et la
+     présentation sont mis dans une file traitée dans l'ordre par un fil à part : le jeu ne traduit
+     plus ses listes en commandes Metal lui-même (Elden Ring après 0040 : 400 à 580 ms/s du fil du
+     jeu). Première commande de chaque liste gardée à l'envoi (la tête de liste est dans un tableau
+     qui peut être déplacé). Jeu freiné à deux images d'avance. AMBRE_DX12_ASYNC=0 : comme avant.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
