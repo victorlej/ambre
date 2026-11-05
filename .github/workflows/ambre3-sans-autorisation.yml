@@ -34,9 +34,20 @@ jobs:
           path: ms
           persist-credentials: false
 
+      - name: llvm-mingw (chaîne de compilation Windows attendue par la recette)
+        working-directory: ms
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p toolchain
+          gh release download 20261020 -R mstorsjo/llvm-mingw -p 'llvm-mingw-20261020-ucrt-macos-universal.tar.xz' -D toolchain
+          tar -xJf toolchain/llvm-mingw-20261020-ucrt-macos-universal.tar.xz -C toolchain
+          ls toolchain/llvm-mingw-20261020-ucrt-macos-universal/bin | head -3
+
       - name: Sources (Wine, FEX, Mullion, VKD3D-Proton, DXVK…)
         working-directory: ms
         run: |
+          export JOBS=$(sysctl -n hw.ncpu)
           zsh scripts/fetch-sources.sh
           git submodule update --init --recursive src/FEX src/dxvk-macos
           for d in src/*; do echo "$d : $(git -C "$d" rev-parse --short HEAD 2>/dev/null)"; done
