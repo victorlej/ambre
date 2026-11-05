@@ -1,18 +1,19 @@
 diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
-index 6af4484..099d856 100644
+index 6af4484..f5a92c8 100644
 --- a/src/d3d12/d3d12_command_queue.cpp
 +++ b/src/d3d12/d3d12_command_queue.cpp
-@@ -27,6 +27,9 @@
+@@ -27,6 +27,10 @@
  #include "d3d10_1.h"
  #include "d3d11_4.h"
  #include <chrono>
 +#include <deque>
++#include <memory>
 +#include <functional>
 +#include <vector>
  #include <string>
  #include <algorithm>
  
-@@ -125,6 +128,67 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
+@@ -125,6 +129,67 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
      }
    };
  
@@ -80,7 +81,7 @@ index 6af4484..099d856 100644
    static constexpr uint32_t kBatchLists = 24;
    bool batch_ = env::getEnvVar("AMBRE_DX12_BATCH") != "0";
    bool open_ = false;          // un lot est ouvert (pas encore validé)
-@@ -212,6 +276,12 @@ public:
+@@ -212,6 +277,12 @@ public:
        inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
  
    ~MTLD3D12CommandQueueImpl() {
@@ -93,7 +94,7 @@ index 6af4484..099d856 100644
      std::lock_guard<dxmt::mutex> lock(mutex_commit_);
      CommitOpen();
      inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
-@@ -229,6 +299,8 @@ public:
+@@ -229,6 +300,8 @@ public:
      queue_ = metal_device.newCommandQueue(kCommandQueueSize);
      if (!queue_)
        return E_FAIL;
@@ -102,7 +103,7 @@ index 6af4484..099d856 100644
      queue_.addResidencySet(device_->GetGlobalResidencySet());
  
      fence_ = metal_device.newFence();
-@@ -291,7 +363,21 @@ public:
+@@ -291,7 +364,21 @@ public:
  
    void STDMETHODCALLTYPE
    ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
@@ -125,7 +126,7 @@ index 6af4484..099d856 100644
      struct EncodeTimer {
        std::atomic<uint64_t> &total;
        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-@@ -301,9 +387,8 @@ public:
+@@ -301,9 +388,8 @@ public:
      } encode_timer{perf_encode_ns_};
      auto scope = StartCommitting(false);
      auto &cmdbuf = scope.inflight.cmdbuf;
@@ -137,7 +138,7 @@ index 6af4484..099d856 100644
        EncoderType ambre_previous = EncoderType::Null; // 0027 : encodeur précédent (dans cette liste)
        for (EncoderData *ambre_prev = nullptr; current; ambre_prev = current, current = current->next) {
          if (ambre_prev && ambre_prev->type != EncoderType::Null)
-@@ -470,17 +555,21 @@ public:
+@@ -470,17 +556,21 @@ public:
  
    HRESULT STDMETHODCALLTYPE
    Signal(ID3D12Fence *pFence, UINT64 Value) {
@@ -165,18 +166,19 @@ index 6af4484..099d856 100644
      return S_OK;
    };
  
-@@ -524,6 +613,25 @@ public:
+@@ -524,6 +614,26 @@ public:
    Present(
        Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after, SpatialScaler *scaler,
        WMT::Texture upscaled
 +  ) {
 +    // Ambre (0041) : propriétés de la couche lues sur le fil du jeu (comme en DirectX 11), image
 +    // présentée sur le fil d'envoi, dans l'ordre du travail du jeu. Références gardées jusque-là.
-+    auto state = presenter->synchronizeLayerProperties();
++    // PresentState ne se copie pas : gardé dans un pointeur partagé (std::function doit pouvoir copier).
++    auto state = std::make_shared<Presenter::PresentState>(presenter->synchronizeLayerProperties());
 +    Submit(
 +        [this, presenter = Rc<Presenter>(presenter), backbuffer = Com<ID3D12Resource>(backbuffer), hLantecyWaitable, after,
 +         scaler = Rc<SpatialScaler>(scaler), upscaled = WMT::Reference<WMT::Texture>(upscaled), state]() mutable {
-+          EncodePresent(presenter.ptr(), backbuffer.ptr(), hLantecyWaitable, after, scaler.ptr(), upscaled, state);
++          EncodePresent(presenter.ptr(), backbuffer.ptr(), hLantecyWaitable, after, scaler.ptr(), upscaled, *state);
 +        },
 +        true
 +    );
@@ -191,7 +193,7 @@ index 6af4484..099d856 100644
    ) {
      auto scope = StartCommitting();
      auto &cmdbuf = scope.inflight.cmdbuf;
-@@ -549,7 +657,6 @@ public:
+@@ -549,7 +659,6 @@ public:
      if (scaled)
        wait_before_present = scaler->fence();
  
@@ -199,7 +201,7 @@ index 6af4484..099d856 100644
      auto drawable = presenter->encodeCommands(
          cmdbuf, source, state.metadata,
          [&](auto encoder) { encoder.waitForFence(wait_before_present, WMTRenderStageFragment); },
-@@ -561,8 +668,6 @@ public:
+@@ -561,8 +670,6 @@ public:
      else
        cmdbuf.presentDrawable(drawable);
      scope.inflight.semaphore = hLantecyWaitable;
