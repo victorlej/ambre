@@ -1,0 +1,70 @@
+name: Ambre 3 sans autorisation (natif ARM64, essai)
+
+# Ambre 3, voie sans compte payant (5 nov. 2026) : Wine natif pour la puce Apple, sans Rosetta, et
+# sans l'autorisation Apple « cross-architecture-support ». Base : la recette de MetalSharp-Wine
+# (https://github.com/metalsharp/MetalSharp-Wine ; scripts AGPL-3.0, Wine LGPL, FEX MIT, Mullion
+# LGPL), à une version figée. Sans l'autorisation : programmes x86-64 et ARM64 en pages de 16 Ko,
+# ordre mémoire Intel imité par FEX ; pas de 32 bits. Archive signée ad hoc (aucun compte Apple).
+# Utilisée seulement pour l'essai sur le Mac de Victor ; pas de distribution.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Version de MetalSharp-Wine (étiquette)"
+        default: "v5.0"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Recette de MetalSharp-Wine
+        uses: actions/checkout@v4
+        with:
+          repository: metalsharp/MetalSharp-Wine
+          ref: ${{ inputs.ref }}
+          path: ms
+          persist-credentials: false
+
+      - name: Sources (Wine, FEX, Mullion, VKD3D-Proton, DXVK…)
+        working-directory: ms
+        run: |
+          zsh scripts/fetch-sources.sh
+          git submodule update --init --recursive src/FEX src/dxvk-macos
+          for d in src/*; do echo "$d : $(git -C "$d" rev-parse --short HEAD 2>/dev/null)"; done
+
+      - name: Xcode et outils Metal
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain || true
+          xcrun -sdk macosx metal --version || true
+
+      - name: Outils Homebrew
+        run: brew install cmake ninja meson pkgconf autoconf automake libtool bison flex nasm gettext gperf
+
+      - name: Compilation complète (dépendances, ARM64X, Wine, FEX, tests, paquet)
+        working-directory: ms
+        run: zsh scripts/build-all.sh
+
+      - name: Contenu
+        if: always()
+        working-directory: ms
+        run: |
+          ls -la dist 2>/dev/null || true
+          du -sh dist/* 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ambre3-sans-autorisation-${{ inputs.ref }}
+          path: |
+            ms/dist/*.tar.xz
+            ms/dist/*.tar.xz.sha256
+          retention-days: 7
