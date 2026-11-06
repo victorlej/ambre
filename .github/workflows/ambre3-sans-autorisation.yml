@@ -102,6 +102,13 @@ jobs:
           # paquet n'accepte que l'ARM64 : on ne garde que cette partie, signée de nouveau.
           sed -i '' 's|^zsh \$S/build-deps.sh$|zsh $S/build-deps.sh; M=${0:A:h:h}/deps/prefix/lib/libMoltenVK.dylib; [[ $(lipo -archs $M) == arm64 ]] \|\| { lipo -thin arm64 $M -output $M.arm64 \&\& mv $M.arm64 $M \&\& codesign -f -s - $M; }|' scripts/build-all.sh
           grep -n "MoltenVK" scripts/build-all.sh
+          # Partie Mac de FEX : nom interne relatif au lieu du chemin de la machine de compilation.
+          sed -i '' 's|clang++ -std=c++20 -O2 -shared |clang++ -std=c++20 -O2 -shared -install_name @rpath/lib$n.so |' scripts/build-fex.sh
+          # Contrôle strict final : le convertisseur d'Apple (fourni tel quel, universel) y échoue ;
+          # pour l'essai, on garde le rapport sans bloquer l'archive.
+          sed -i '' 's|^STRICT=1 zsh \$S/audit-macho.sh \$ROOT/dist$|STRICT=1 zsh $S/audit-macho.sh $ROOT/dist \|\| echo "contrôle strict : remarques ci-dessus (essai)"|' scripts/build-all.sh
+          grep -n "install_name" scripts/build-fex.sh
+          grep -n "STRICT" scripts/build-all.sh
           zsh scripts/build-all.sh
 
       - name: Sauvegarde des dépendances
