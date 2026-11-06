@@ -1,6 +1,6 @@
 # Ambre
 
-<p align="center"><img src="assets/logo/ambre-banniere.png" alt="Ambre, le moteur de jeu d'Allia" width="560"></p>
+<p align="center"><img src="assets/logo/ambre-icon.png" alt="Ambre, le moteur de jeu d'Allia" width="160"></p>
 
 **Ambre** est le moteur d'Allia : il fait tourner les jeux Windows sur les Mac à puce Apple.
 
@@ -36,6 +36,8 @@ Chaque composant téléchargé est vérifié par son empreinte SHA-256. Les bibl
 | Ambre Pro (privé) | Les fonctions exclusives d'Ambre (compteur, mesure pour Allia, cache des shaders dans DXVK ; compteur dans l'image et génération d'images pour Ambre Metal) sont dans un module privé, diffusé compilé ([ambre-pro-versions](https://github.com/victorlej/ambre-pro-versions)). Il se branche sur des prises génériques ; les modifications de Wine et de DXMT (LGPL), elles, sont toutes ici. |
 
 ## Ambre Metal
+
+<img src="assets/logo/ambre-metal-icon.png" alt="Ambre Metal" width="96">
 
 Ambre Metal est notre version de DXMT : DirectX 11 traduit directement en Metal, sans passer par Vulkan. Allia l'utilise par défaut pour les jeux DirectX 11 et garde DXVK en secours. Correctifs (`dxmt/patches/`, LGPL comme DXMT) :
 

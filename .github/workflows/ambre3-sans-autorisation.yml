@@ -88,7 +88,7 @@ jobs:
           export JOBS=4
           # FEX : CMake fait analyser les sources C++ (modules) par clang-scan-deps, qui, appelé par
           # le lien de toolchain/mingw-shims, ne trouve ni la libc ni libc++ ; FEX n'a pas de modules.
-          sed -i '' 's/-DCMAKE_BUILD_TYPE=Release /-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF /' scripts/build-fex.sh
+          sed -i '' 's/-DCMAKE_BUILD_TYPE=Release /-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DFMT_MODULE=OFF /' scripts/build-fex.sh
           grep -q SCAN_FOR_MODULES scripts/build-fex.sh
           # Wine déjà compilé et installé lors d'un essai précédent (gardé dans install/) : on le reprend.
           sed -i '' 's|^zsh \$S/build-wine.sh$|[[ -x ${0:A:h:h}/install/bin/wine ]] \&\& echo "wine : repris" \|\| zsh $S/build-wine.sh|' scripts/build-all.sh
