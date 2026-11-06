@@ -49,7 +49,7 @@ jobs:
         run: |
           export JOBS=$(sysctl -n hw.ncpu)
           zsh scripts/fetch-sources.sh
-          git submodule update --init --recursive src/FEX src/dxvk-macos
+          git submodule update --init --recursive src/FEX src/dxvk-macos src/mullion
           # Scripts de llvm-mingw à la même version que la chaîne (build-arm64ec-runtimes.sh :
           # bibliothèques C, compiler-rt et libc++ recompilées en ARM64X, nécessaires à FEX).
           git clone --depth 1 --branch 20261020 https://github.com/mstorsjo/llvm-mingw.git src/llvm-mingw
