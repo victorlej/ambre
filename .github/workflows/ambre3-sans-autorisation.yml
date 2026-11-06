@@ -98,6 +98,10 @@ jobs:
           # Un programme d'essai qui ne se lie pas est signalé et sauté : ils ne font pas partie du paquet.
           sed -i '' 's| \$src -o \$ROOT/tests/bin/\${src:t:r}-\$t.exe$| $src -ld3d9 -ld3d11 -ld3d12 -ldxgi -ldxguid -lopengl32 -lmfplat -lmfuuid -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32 -o $ROOT/tests/bin/${src:t:r}-$t.exe \|\| echo "essai sauté : ${src:t} ($t)"|' scripts/build-tests.sh
           grep -q -- "-ld3d11" scripts/build-tests.sh
+          # MoltenVK est téléchargé tout fait en version universelle (Intel + ARM64) ; le contrôle du
+          # paquet n'accepte que l'ARM64 : on ne garde que cette partie, signée de nouveau.
+          sed -i '' 's|^zsh \$S/build-deps.sh$|zsh $S/build-deps.sh; M=${0:A:h:h}/deps/prefix/lib/libMoltenVK.dylib; [[ $(lipo -archs $M) == arm64 ]] \|\| { lipo -thin arm64 $M -output $M.arm64 \&\& mv $M.arm64 $M \&\& codesign -f -s - $M; }|' scripts/build-all.sh
+          grep -n "MoltenVK" scripts/build-all.sh
           zsh scripts/build-all.sh
 
       - name: Sauvegarde des dépendances
