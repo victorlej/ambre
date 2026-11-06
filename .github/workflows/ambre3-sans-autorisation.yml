@@ -75,6 +75,7 @@ jobs:
             ms/deps/stamps
             ms/toolchain
             ms/install
+            ms/deps/llvm15
           key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
           restore-keys: ambre3-deps-${{ inputs.ref }}-
 
@@ -90,9 +91,6 @@ jobs:
           # le lien de toolchain/mingw-shims, ne trouve ni la libc ni libc++ ; FEX n'a pas de modules.
           sed -i '' 's/-DCMAKE_BUILD_TYPE=Release /-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DFMT_MODULE=OFF /' scripts/build-fex.sh
           grep -q SCAN_FOR_MODULES scripts/build-fex.sh
-          # Wine déjà compilé et installé lors d'un essai précédent (gardé dans install/) : on le reprend.
-          sed -i '' 's|^zsh \$S/build-wine.sh$|[[ -x ${0:A:h:h}/install/bin/wine ]] \&\& echo "wine : repris" \|\| zsh $S/build-wine.sh|' scripts/build-all.sh
-          grep -n "build-wine" scripts/build-all.sh
           # Programmes d'essai DirectX de la recette liés sans les bibliothèques DirectX (oubli de leur
           # côté) : on les ajoute, sans effet sur les autres programmes.
           # Un programme d'essai qui ne se lie pas est signalé et sauté : ils ne font pas partie du paquet.
@@ -109,6 +107,25 @@ jobs:
           sed -i '' 's|^STRICT=1 zsh \$S/audit-macho.sh \$ROOT/dist$|STRICT=1 zsh $S/audit-macho.sh $ROOT/dist \|\| echo "contrôle strict : remarques ci-dessus (essai)"|' scripts/build-all.sh
           grep -n "install_name" scripts/build-fex.sh
           grep -n "STRICT" scripts/build-all.sh
+          # Compléments que build-all.sh ne fait pas (README de la recette, « add-ons ») : sans les
+          # compilateurs de shaders, wine.inf boucle à la création de la bouteille ; sans Mullion
+          # (leur DXMT), aucun jeu DirectX ne s'affiche. Mullion et LLVM 15 : échec signalé, pas bloquant.
+          python3 - <<'PY'
+          p = "scripts/build-all.sh"
+          s = open(p).read()
+          extra = ("zsh $S/stage-shader-compilers.sh\n"
+                   "zsh $S/fetch-addons.sh\n"
+                   "zsh $S/fetch-fonts.sh\n"
+                   "zsh $S/build-innoextract.sh || echo \"complément sauté : innoextract\"\n"
+                   "zsh $S/build-cabextract.sh || echo \"complément sauté : cabextract\"\n"
+                   "zsh $S/build-mullion.sh && echo \"== mullion : ok\" || echo \"complément sauté : mullion\"\n")
+          assert "zsh $S/package.sh" in s
+          s = s.replace("zsh $S/package.sh", extra + "zsh $S/package.sh", 1)
+          open(p, "w").write(s)
+          PY
+          cat scripts/build-all.sh
+          # Sources de LLVM 15.0.7 pour Mullion (build-llvm15.sh les attend dans deps/src/llvm15).
+          [[ -d deps/llvm15/lib ]] || { mkdir -p deps/src/llvm15 && curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/llvm-project-15.0.7.src.tar.xz | tar -xJ -C deps/src/llvm15; }
           zsh scripts/build-all.sh
 
       - name: Sauvegarde des dépendances
@@ -120,6 +137,7 @@ jobs:
             ms/deps/stamps
             ms/toolchain
             ms/install
+            ms/deps/llvm15
           key: ambre3-deps-${{ inputs.ref }}-${{ github.run_id }}
 
       - name: Journaux en cas d'échec
