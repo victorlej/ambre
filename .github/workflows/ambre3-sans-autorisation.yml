@@ -95,7 +95,8 @@ jobs:
           grep -n "build-wine" scripts/build-all.sh
           # Programmes d'essai DirectX de la recette liés sans les bibliothèques DirectX (oubli de leur
           # côté) : on les ajoute, sans effet sur les autres programmes.
-          sed -i '' 's| \$src -o \$ROOT/tests/bin| $src -ld3d11 -ld3d12 -ldxgi -ldxguid -luser32 -lgdi32 -lole32 -o $ROOT/tests/bin|' scripts/build-tests.sh
+          # Un programme d'essai qui ne se lie pas est signalé et sauté : ils ne font pas partie du paquet.
+          sed -i '' 's| \$src -o \$ROOT/tests/bin/\${src:t:r}-\$t.exe$| $src -ld3d9 -ld3d11 -ld3d12 -ldxgi -ldxguid -lopengl32 -lmfplat -lmfuuid -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32 -o $ROOT/tests/bin/${src:t:r}-$t.exe \|\| echo "essai sauté : ${src:t} ($t)"|' scripts/build-tests.sh
           grep -q -- "-ld3d11" scripts/build-tests.sh
           zsh scripts/build-all.sh
 
