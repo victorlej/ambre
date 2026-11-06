@@ -93,6 +93,10 @@ jobs:
           # Wine déjà compilé et installé lors d'un essai précédent (gardé dans install/) : on le reprend.
           sed -i '' 's|^zsh \$S/build-wine.sh$|[[ -x ${0:A:h:h}/install/bin/wine ]] \&\& echo "wine : repris" \|\| zsh $S/build-wine.sh|' scripts/build-all.sh
           grep -n "build-wine" scripts/build-all.sh
+          # Programmes d'essai DirectX de la recette liés sans les bibliothèques DirectX (oubli de leur
+          # côté) : on les ajoute, sans effet sur les autres programmes.
+          sed -i '' 's| \$src -o \$ROOT/tests/bin| $src -ld3d11 -ld3d12 -ldxgi -ldxguid -luser32 -lgdi32 -lole32 -o $ROOT/tests/bin|' scripts/build-tests.sh
+          grep -q -- "-ld3d11" scripts/build-tests.sh
           zsh scripts/build-all.sh
 
       - name: Sauvegarde des dépendances
