@@ -57,6 +57,11 @@ jobs:
 
       - name: Xcode et outils Metal
         run: |
+          # Mullion appelle des fonctions MetalFX de macOS 27 (génération d'images) : on prend le
+          # Xcode le plus récent installé sur la machine.
+          ls -d /Applications/Xcode*.app
+          X=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$X"
           xcodebuild -version
           xcodebuild -downloadComponent MetalToolchain || true
           xcrun -sdk macosx metal --version || true
