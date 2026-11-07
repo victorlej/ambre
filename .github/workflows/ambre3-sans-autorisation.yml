@@ -129,6 +129,12 @@ jobs:
           open(p, "w").write(s)
           PY
           cat scripts/build-all.sh
+          # Mullion : une seule ligne utilise une propriété MetalFX absente du SDK de Xcode 26.6
+          # (requiresPrevColorTexture, macOS 27) ; réglée par son nom, seulement si le Mac la connaît.
+          W=src/mullion/src/winemetal/unix/winemetal_unix.c
+          sed -i '' 's|^    desc.requiresPrevColorTexture = NO;$|    if ([desc respondsToSelector:NSSelectorFromString(@"setRequiresPrevColorTexture:")]) [(id)desc setValue:@NO forKey:@"requiresPrevColorTexture"];|' $W
+          grep -n "requiresPrevColorTexture" $W
+          ! grep -q "desc.requiresPrevColorTexture" $W
           # Sources de LLVM 15.0.7 pour Mullion (build-llvm15.sh les attend dans deps/src/llvm15).
           [[ -d deps/llvm15/lib ]] || { mkdir -p deps/src/llvm15 && curl -fsSL https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/llvm-project-15.0.7.src.tar.xz | tar -xJ -C deps/src/llvm15; }
           zsh scripts/build-all.sh
