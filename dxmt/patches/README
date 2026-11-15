@@ -204,6 +204,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0046 DXGI : version de pilote vraisemblable dans CheckInterfaceSupport, comme DXVK (35.0.x ;
      NVIDIA : 35.0.1999.99 = 999.99). Avant, ~0 donnait une version NVIDIA de 155.35 et GTA V
      Enhanced demandait de mettre à jour le pilote (ERR_GFX_D3D_NOD3D12).
+0047 AMBRE_GPU_DISCRETE=1 : la puce est décrite comme une carte classique (ARCHITECTURE : ni UMA ni
+     rendu par tuiles ; DXGI : toute la mémoire de travail en mémoire vidéo dédiée). NVAPI :
+     GetPhysicalFrameBufferSize / GetVirtualFrameBufferSize (mémoire de travail Metal, en Ko) et
+     GetLogicalGPUFromPhysicalGPU (même identifiant), demandés par GTA V Enhanced.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

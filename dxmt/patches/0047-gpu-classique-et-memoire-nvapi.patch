@@ -1,0 +1,110 @@
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index a4fd31b..1c23b24 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -48,6 +48,13 @@ namespace dxmt {
+ // Ambre : mode de diagnostic DirectX 12 (AMBRE_DXIL_DUMP = dossier).
+ // Annonce le Shader Model 6 pour que le jeu reste en DirectX 12 et envoie
+ // ses shaders DXIL, enregistrés dans ce dossier pour être étudiés.
++// Ambre (essai GTA V Enhanced) : AMBRE_GPU_DISCRETE=1 décrit la puce comme une carte graphique classique
++// (ni mémoire partagée ni rendu par tuiles) aux jeux qui refusent les puces intégrées.
++bool AmbreGpuDiscrete() {
++  static const bool enabled = env::getEnvVar("AMBRE_GPU_DISCRETE") == "1";
++  return enabled;
++}
++
+ bool AmbreDxilDiagnostic() {
+   static const bool enabled = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
+   return enabled;
+@@ -267,8 +274,8 @@ public:
+       if (out->NodeIndex > 0)
+         return E_INVALIDARG;
+       out->CacheCoherentUMA = FALSE;
+-      out->TileBasedRenderer = TRUE;
+-      out->UMA = !advertise_numa_;
++      out->TileBasedRenderer = AmbreGpuDiscrete() ? FALSE : TRUE;
++      out->UMA = AmbreGpuDiscrete() ? FALSE : !advertise_numa_;
+       return S_OK;
+     }
+     case D3D12_FEATURE_ARCHITECTURE1: {
+@@ -278,8 +285,8 @@ public:
+       if (out->NodeIndex > 0)
+         return E_INVALIDARG;
+       out->CacheCoherentUMA = FALSE;
+-      out->TileBasedRenderer = TRUE;
+-      out->UMA = !advertise_numa_;
++      out->TileBasedRenderer = AmbreGpuDiscrete() ? FALSE : TRUE;
++      out->UMA = AmbreGpuDiscrete() ? FALSE : !advertise_numa_;
+       out->IsolatedMMU = FALSE;
+       return S_OK;
+     }
+diff --git a/src/dxgi/dxgi_adapter.cpp b/src/dxgi/dxgi_adapter.cpp
+index d3d4e1e..efb79ec 100644
+--- a/src/dxgi/dxgi_adapter.cpp
++++ b/src/dxgi/dxgi_adapter.cpp
+@@ -187,7 +187,7 @@ public:
+ 
+     pDesc->SubSysId = 0;
+     pDesc->Revision = 0;
+-    if (device_.hasUnifiedMemory())
++    if (device_.hasUnifiedMemory() && env::getEnvVar("AMBRE_GPU_DISCRETE") != "1")
+       pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize() / 2; // FIXME: use a more appropriate value
+     else
+       pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize();
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index e9007bb..1b25587 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -570,6 +570,39 @@ NvAPI_GPU_GetBusType(NvPhysicalGpuHandle hPhysicalGpu, NV_GPU_BUS_TYPE *pBusType
+   return NVAPI_NOT_SUPPORTED;
+ }
+ 
++// Ambre : taille de la mémoire vidéo (Ko), lue sur la puce Metal ; GTA V Enhanced la demande.
++static NvU32
++AmbreFrameBufferKB(NvPhysicalGpuHandle hPhysicalGpu) {
++  auto devices = WMT::CopyAllDevices();
++  for (unsigned i = 0; i < devices.count(); i++)
++    if ((NvPhysicalGpuHandle)devices.object(i).registryID() == hPhysicalGpu)
++      return NvU32(devices.object(i).recommendedMaxWorkingSetSize() / 1024);
++  return 0;
++}
++
++NVAPI_INTERFACE
++NvAPI_GPU_GetPhysicalFrameBufferSize(NvPhysicalGpuHandle hPhysicalGpu, NvU32 *pSize) {
++  if (!hPhysicalGpu || !pSize)
++    return NVAPI_INVALID_ARGUMENT;
++  if (!(*pSize = AmbreFrameBufferKB(hPhysicalGpu)))
++    return NVAPI_EXPECTED_PHYSICAL_GPU_HANDLE;
++  return NVAPI_OK;
++}
++
++NVAPI_INTERFACE
++NvAPI_GPU_GetVirtualFrameBufferSize(NvPhysicalGpuHandle hPhysicalGpu, NvU32 *pSize) {
++  return NvAPI_GPU_GetPhysicalFrameBufferSize(hPhysicalGpu, pSize);
++}
++
++NVAPI_INTERFACE
++NvAPI_GetLogicalGPUFromPhysicalGPU(NvPhysicalGpuHandle hPhysicalGpu, NvLogicalGpuHandle *pLogicalGpu) {
++  if (!hPhysicalGpu || !pLogicalGpu)
++    return NVAPI_INVALID_ARGUMENT;
++  // Ambre : un GPU logique par GPU physique, même identifiant (voir NvAPI_GPU_GetLogicalGpuInfo).
++  *pLogicalGpu = (NvLogicalGpuHandle)hPhysicalGpu;
++  return NVAPI_OK;
++}
++
+ NVAPI_INTERFACE
+ NvAPI_GPU_GetMemoryInfo(NvPhysicalGpuHandle hPhysicalGpu, NV_DISPLAY_DRIVER_MEMORY_INFO *pMemoryInfo) {
+   if (!hPhysicalGpu || !pMemoryInfo)
+@@ -899,6 +932,12 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
+     return (void *)&NvAPI_GPU_GetAdapterIdFromPhysicalGpu;
+   case 0x842b066e:
+     return (void *)&NvAPI_GPU_GetLogicalGpuInfo;
++  case 0x46fbeb03:
++    return (void *)&NvAPI_GPU_GetPhysicalFrameBufferSize;
++  case 0x5a04b644:
++    return (void *)&NvAPI_GPU_GetVirtualFrameBufferSize;
++  case 0xadd604d1:
++    return (void *)&NvAPI_GetLogicalGPUFromPhysicalGPU;
+   default:
+     break;
+   }
