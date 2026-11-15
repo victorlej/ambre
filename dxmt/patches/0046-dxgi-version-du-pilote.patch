@@ -1,0 +1,24 @@
+diff --git a/src/dxgi/dxgi_adapter.cpp b/src/dxgi/dxgi_adapter.cpp
+index abccc65..daaf8a1 100644
+--- a/src/dxgi/dxgi_adapter.cpp
++++ b/src/dxgi/dxgi_adapter.cpp
+@@ -209,10 +209,15 @@ public:
+         guid == __uuidof(ID3D10Device1))
+       hr = S_OK;
+ 
+-    // We can't really reconstruct the version numbers
+-    // returned by Windows drivers from Metal
+-    if (SUCCEEDED(hr) && umd_version)
+-      umd_version->QuadPart = ~0ull;
++    // Ambre : version de pilote vraisemblable, comme DXVK. ~0 (tout à 1) devient pour un jeu une
++    // version publique NVIDIA de 155.35 (GTA V Enhanced : « mettez le pilote à jour »,
++    // ERR_GFX_D3D_NOD3D12). 35.0.1999.99 = pilote NVIDIA 999.99 ; ailleurs 35.0 et le maximum.
++    if (SUCCEEDED(hr) && umd_version) {
++      INT vendor = options_.customVendorId >= 0 ? options_.customVendorId
++                 : (g_extension_enabled == VendorExtension::Nvidia ? 0x10DE : 0x106B);
++      umd_version->HighPart = 0x00230000;
++      umd_version->LowPart = vendor == 0x10DE ? 0x0013270fu : 0xffffffffu;
++    }
+ 
+     if (FAILED(hr)) {
+       Logger::err("DXGI: CheckInterfaceSupport: Unsupported interface");

@@ -199,6 +199,11 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 0044 Diagnostic DirectX 12 (seulement avec AMBRE_DXIL_DUMP) : chaque CheckFeatureSupport (fonction,
      taille, résultat, octets rendus), chaque QueryInterface refusé sur l'appareil et chaque
      D3D12CreateDevice (niveau, interface, résultat) sont écrits dans le journal.
+0045 (diagnostic, temporaire) Avec AMBRE_DXIL_DUMP, chaque appel DirectX 12 / DXGI est noté
+     (« ambre-trace: »), avec l'interface demandée pour QueryInterface.
+0046 DXGI : version de pilote vraisemblable dans CheckInterfaceSupport, comme DXVK (35.0.x ;
+     NVIDIA : 35.0.1999.99 = 999.99). Avant, ~0 donnait une version NVIDIA de 155.35 et GTA V
+     Enhanced demandait de mettre à jour le pilote (ERR_GFX_D3D_NOD3D12).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
