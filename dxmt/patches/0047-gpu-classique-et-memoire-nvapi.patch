@@ -52,10 +52,10 @@ index d3d4e1e..efb79ec 100644
      else
        pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize();
 diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
-index e9007bb..1b25587 100644
+index e9007bb..1615813 100644
 --- a/src/nvapi/nvapi.cpp
 +++ b/src/nvapi/nvapi.cpp
-@@ -570,6 +570,39 @@ NvAPI_GPU_GetBusType(NvPhysicalGpuHandle hPhysicalGpu, NV_GPU_BUS_TYPE *pBusType
+@@ -570,6 +570,43 @@ NvAPI_GPU_GetBusType(NvPhysicalGpuHandle hPhysicalGpu, NV_GPU_BUS_TYPE *pBusType
    return NVAPI_NOT_SUPPORTED;
  }
  
@@ -80,7 +80,11 @@ index e9007bb..1b25587 100644
 +
 +NVAPI_INTERFACE
 +NvAPI_GPU_GetVirtualFrameBufferSize(NvPhysicalGpuHandle hPhysicalGpu, NvU32 *pSize) {
-+  return NvAPI_GPU_GetPhysicalFrameBufferSize(hPhysicalGpu, pSize);
++  if (!hPhysicalGpu || !pSize)
++    return NVAPI_INVALID_ARGUMENT;
++  if (!(*pSize = AmbreFrameBufferKB(hPhysicalGpu)))
++    return NVAPI_EXPECTED_PHYSICAL_GPU_HANDLE;
++  return NVAPI_OK;
 +}
 +
 +NVAPI_INTERFACE
@@ -95,7 +99,7 @@ index e9007bb..1b25587 100644
  NVAPI_INTERFACE
  NvAPI_GPU_GetMemoryInfo(NvPhysicalGpuHandle hPhysicalGpu, NV_DISPLAY_DRIVER_MEMORY_INFO *pMemoryInfo) {
    if (!hPhysicalGpu || !pMemoryInfo)
-@@ -899,6 +932,12 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
+@@ -899,6 +936,12 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
      return (void *)&NvAPI_GPU_GetAdapterIdFromPhysicalGpu;
    case 0x842b066e:
      return (void *)&NvAPI_GPU_GetLogicalGpuInfo;
