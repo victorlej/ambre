@@ -192,9 +192,6 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 
 0042 DXGI expose IDXGIFactory7 et utilise l’énumération d’adaptateurs de la version 6.
      Les méthodes de notification de reconnexion GPU signalent une opération non prise en charge.
-0043 DXGI charge le module système d’Agility de Wine pendant la création de la fabrique pour
-     les programmes qui exportent les deux paramètres Agility et ont déjà chargé Direct3D 12.
-     La fabrique conserve le module chargé pendant la durée du processus.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
