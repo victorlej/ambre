@@ -1,0 +1,1142 @@
+diff --git a/src/d3d12/d3d12_command_queue.cpp b/src/d3d12/d3d12_command_queue.cpp
+index f5a92c8..9d39b7a 100644
+--- a/src/d3d12/d3d12_command_queue.cpp
++++ b/src/d3d12/d3d12_command_queue.cpp
+@@ -23,6 +23,7 @@
+ #include "dxgi_interfaces.h"
+ #include "log/log.hpp"
+ #include "util_env.hpp"
++#include "util_string.hpp"
+ #include <atomic>
+ #include "d3d10_1.h"
+ #include "d3d11_4.h"
+@@ -33,6 +34,15 @@
+ #include <vector>
+ #include <string>
+ #include <algorithm>
++#include "util_env.hpp"
++#include "util_string.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -312,6 +322,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   QueryInterface(REFIID riid, void **ppvObject) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+     if (ppvObject == nullptr)
+       return E_POINTER;
+ 
+@@ -351,6 +362,7 @@ public:
+       const D3D12_TILE_RANGE_FLAGS *range_flags, const UINT *heap_range_offsets, const UINT *range_tile_counts,
+       D3D12_TILE_MAPPING_FLAGS flags
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     IMPLEMENT_ME
+   };
+ 
+@@ -359,11 +371,13 @@ public:
+       ID3D12Resource *src_resource, const D3D12_TILED_RESOURCE_COORDINATE *src_region_start_coordinate,
+       const D3D12_TILE_REGION_SIZE *region_size, D3D12_TILE_MAPPING_FLAGS flags
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     IMPLEMENT_ME
+   };
+ 
+   void STDMETHODCALLTYPE
+   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre (0041) : on garde la première commande de chaque liste (dans la mémoire de son allocateur,
+     // qui ne bouge pas et que le jeu ne peut vider qu'après la fin du travail sur la puce), pas la
+     // tête de liste (rangée dans un tableau qui peut être déplacé quand le jeu enregistre la suivante).
+@@ -556,6 +570,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Signal(ID3D12Fence *pFence, UINT64 Value) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     Rc<Fence> fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
+     Submit([this, fence, Value]() mutable {
+       auto scope = StartCommitting();
+@@ -566,6 +581,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Wait(ID3D12Fence *pFence, UINT64 Value) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     Rc<Fence> fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
+     Submit([this, fence, Value]() mutable {
+       auto scope = StartCommitting(false);
+@@ -576,6 +592,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   GetTimestampFrequency(UINT64 *pFrequency) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre : horloge du processeur (QueryPerformanceCounter), en attendant de vrais
+     // horodatages GPU ; Unreal lit fréquence et calibrage au démarrage et s'arrête sinon.
+     if (!pFrequency)
+@@ -588,6 +605,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!gpu_timestamp || !cpu_timestamp)
+       return E_INVALIDARG;
+     LARGE_INTEGER now;
+@@ -598,6 +616,7 @@ public:
+ 
+   D3D12_COMMAND_QUEUE_DESC *STDMETHODCALLTYPE
+   GetDesc(D3D12_COMMAND_QUEUE_DESC *__ret) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     *__ret = desc_;
+     return __ret;
+   };
+@@ -607,6 +626,7 @@ public:
+       IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
+   }
+ 
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 89106ce..a4fd31b 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -34,6 +34,14 @@
+ #include "d3d12_raytracing.hpp"
+ #include <deque>
+ #include <chrono>
++#include "util_env.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -127,12 +135,14 @@ public:
+ 
+   UINT STDMETHODCALLTYPE
+   GetNodeCount() {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return 1; // FIXME
+   };
+ 
+   HRESULT
+   STDMETHODCALLTYPE
+   QueryInterface(REFIID riid, void **ppvObject) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+     if (ppvObject == nullptr)
+       return E_POINTER;
+ 
+@@ -175,6 +185,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc->Flags)
+       WARN("CreateCommandQueue: flags ignored: ", pDesc->Flags);
+     return dxmt::CreateCommandQueue(this, pDesc, riid, ppCommandQueue);
+@@ -182,11 +193,13 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateCommandAllocator(this, Type, riid, ppCommandAllocator);
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     auto start = std::chrono::steady_clock::now();
+     HRESULT hr = dxmt::CreateGraphicsPipelineState(this, pDesc, riid, ppPipelineState);
+     AmbreCountPipeline(start);
+@@ -195,6 +208,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     auto start = std::chrono::steady_clock::now();
+     HRESULT hr = dxmt::CreateComputePipelineState(this, pDesc, riid, ppPipelineState);
+     AmbreCountPipeline(start);
+@@ -217,6 +231,7 @@ public:
+       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, ID3D12CommandAllocator *pCommandAllocator,
+       ID3D12PipelineState *pInitialPipelineState, REFIID riid, void **ppCommandList
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pCommandAllocator)
+       return E_INVALIDARG;
+     auto allocator = static_cast<MTLD3D12CommandAllocator *>(pCommandAllocator);
+@@ -225,6 +240,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureData, UINT DataSize) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre (diagnostic, AMBRE_DXIL_DUMP) : chaque vérification du jeu et ce qu'on lui répond.
+     if (AmbreDxilDiagnostic()) {
+       HRESULT hr = CheckFeatureSupportImpl(Feature, pFeatureData, DataSize);
+@@ -508,11 +524,13 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC *pDesc, REFIID riid, void **ppDescriptorHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateDescriptorHeap(this, pDesc, riid, ppDescriptorHeap);
+   };
+ 
+   UINT STDMETHODCALLTYPE
+   GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     switch (DescriptorHeapType) {
+     case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
+     case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
+@@ -529,11 +547,13 @@ public:
+   CreateRootSignature(
+       UINT NodeMask, const void *pBytecode, SIZE_T BytecodeLength, REFIID riid, void **ppRootSignature
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateRootSignature(this, NodeMask, pBytecode, BytecodeLength, riid, ppRootSignature);
+   };
+ 
+   void STDMETHODCALLTYPE
+   CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+     if (pDesc)
+       Heap->AddConstantBufferView(Index, pDesc->BufferLocation, pDesc->SizeInBytes);
+@@ -545,6 +565,7 @@ public:
+   CreateShaderResourceView(
+       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pResource) {
+       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+       Heap->AddShaderResourceView(Index, pDesc);
+@@ -559,6 +580,7 @@ public:
+       ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+       D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pResource) {
+       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
+       Heap->AddUnorderedAccessView(Index, pDesc);
+@@ -572,6 +594,7 @@ public:
+   CreateRenderTargetView(
+       ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pResource) {
+       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+       Heap->AddRenderTarget(Index, nullptr);
+@@ -585,6 +608,7 @@ public:
+   CreateDepthStencilView(
+       ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pResource) {
+       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
+       Heap->AddRenderTarget(Index, nullptr);
+@@ -596,6 +620,7 @@ public:
+ 
+   void STDMETHODCALLTYPE
+   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
+     Heap->AddSampler(Index, pDesc);
+   };
+@@ -607,6 +632,7 @@ public:
+       const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
+       D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     unsigned int dst_range_idx, dst_idx, src_range_idx, src_idx;
+     unsigned int dst_range_size, src_range_size, copy_count;
+ 
+@@ -664,6 +690,7 @@ public:
+       UINT DescriptorCount, const D3D12_CPU_DESCRIPTOR_HANDLE DstDescriptorRangeOffset,
+       const D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeOffset, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     CopyDescriptors(
+         1, &DstDescriptorRangeOffset, &DescriptorCount, 1, &SrcDescriptorRangeOffset, &DescriptorCount,
+         DescriptorHeapType
+@@ -674,11 +701,13 @@ public:
+   GetResourceAllocationInfo(
+       D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDestCount, const D3D12_RESOURCE_DESC *pDescs
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return GetResourceAllocationInfo1(__ret, VisibleMask, ResourceDestCount, pDescs, nullptr);
+   };
+ 
+   D3D12_HEAP_PROPERTIES *STDMETHODCALLTYPE
+   GetCustomHeapProperties(D3D12_HEAP_PROPERTIES *__ret, UINT NodeMask, D3D12_HEAP_TYPE HeapType) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     __ret->Type = D3D12_HEAP_TYPE_CUSTOM;
+     __ret->CreationNodeMask = 1;
+     __ret->VisibleNodeMask = 1;
+@@ -797,6 +826,7 @@ public:
+       const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
+       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     HRESULT hr =
+         CreateCommittedResourceImpl(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
+     if (FAILED(hr))
+@@ -809,6 +839,7 @@ public:
+       ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     HRESULT hr = CreatePlacedResourceImpl(pHeap, Offset, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
+     if (FAILED(hr))
+       AmbreLogResourceFailure("CreatePlacedResource", hr, pDesc);
+@@ -817,6 +848,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     HRESULT hr = CreateHeapImpl(pDesc, riid, ppHeap);
+     if (FAILED(hr) && pDesc)
+       WARN(
+@@ -831,6 +863,7 @@ public:
+       const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **resource
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     AmbreLogResourceFailure("CreateReservedResource (pas implemente)", E_NOTIMPL, pDesc);
+     return E_NOTIMPL;
+   };
+@@ -839,37 +872,44 @@ public:
+   CreateSharedHandle(
+       ID3D12DeviceChild *object, const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name, HANDLE *handle
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   OpenSharedHandleByName(const WCHAR *name, DWORD access, HANDLE *handle) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   MakeResident(UINT ObjectCount, ID3D12Pageable *const *objects) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   Evict(UINT ObjectCount, ID3D12Pageable *const *objects) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre : mémoire unifiée sur Mac, rien à évincer (comme MakeResident).
+     return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateFence(UINT64 InitialValue, D3D12_FENCE_FLAGS Flags, REFIID riid, void **ppFence) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateFence(this, InitialValue, Flags, riid, ppFence);
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   GetDeviceRemovedReason() {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return S_OK;
+   };
+ 
+@@ -877,6 +917,7 @@ public:
+       const D3D12_RESOURCE_DESC *pDesc, UINT FirstSubresource, UINT SubresourceCount, UINT64 BaseOffset,
+       D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows, UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     UINT64 TotalBytes = 0;
+     UINT64 Offset = 0;
+     UINT BlockWidth = 1;
+@@ -985,11 +1026,13 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateQueryHeap(const D3D12_QUERY_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateQueryHeap(this, pDesc, riid, ppHeap);
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   SetStablePowerState(WINBOOL Enable) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   };
+ 
+@@ -998,6 +1041,7 @@ public:
+       const D3D12_COMMAND_SIGNATURE_DESC *pDesc, ID3D12RootSignature *pRootSignature, REFIID riid,
+       void **ppCommandSignature
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateCommandSignature(this, pDesc, pRootSignature, riid, ppCommandSignature);
+   };
+ 
+@@ -1006,17 +1050,20 @@ public:
+       D3D12_TILE_SHAPE *StandardTileShape, UINT *SubresourceTilingCount, UINT FirstSubresourceTiling,
+       D3D12_SUBRESOURCE_TILING *SubresourceTilings
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     IMPLEMENT_ME
+   };
+ 
+   LUID *STDMETHODCALLTYPE
+   GetAdapterLuid(LUID *ret) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     *ret = std::bit_cast<LUID>(__builtin_bswap64(adapter_->GetMTLDevice().registryID()));
+     return ret;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreatePipelineLibrary(const void *blob, SIZE_T blob_size, REFIID iid, void **lib) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     WARN("ambre-dx12: CreatePipelineLibrary non implemente");
+     return E_NOTIMPL;
+   };
+@@ -1026,16 +1073,19 @@ public:
+       ID3D12Fence *const *pFences, const UINT64 *pValues, UINT FenceCount, D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags,
+       HANDLE hEvent
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   SetResidencyPriority(UINT ObjectCount, ID3D12Pageable *const *pObjects, const D3D12_RESIDENCY_PRIORITY *pPriorities) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return S_OK;
+   };
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreatePipelineState(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc, REFIID riid, void **ppPipelineState) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     const char *stream_start = reinterpret_cast<const char *>(pDesc->pPipelineStateSubobjectStream);
+     const char *stream_end = stream_start + pDesc->SizeInBytes;
+ 
+@@ -1258,11 +1308,13 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   OpenExistingHeapFromAddress(const void *pAddress, REFIID riid, void **ppHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   OpenExistingHeapFromFileMapping(HANDLE hFileMapping, REFIID riid, void **ppHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   }
+ 
+@@ -1271,6 +1323,7 @@ public:
+       D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable *const *ppObjects, ID3D12Fence *pFence,
+       UINT64 FenceValue
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre : tout est déjà résident (mémoire unifiée) ; on signale la barrière tout de suite.
+     return pFence ? pFence->Signal(FenceValue) : E_INVALIDARG;
+   }
+@@ -1279,12 +1332,14 @@ public:
+   CreateCommandList1(
+       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, D3D12_COMMAND_LIST_FLAGS Flags, REFIID riid, void **ppCommandList
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     WARN("ambre-dx12: CreateCommandList1 non implemente");
+     return E_NOTIMPL;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateProtectedResourceSession(const D3D12_PROTECTED_RESOURCE_SESSION_DESC *pDesc, REFIID riid, void **ppSession) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   }
+ 
+@@ -1294,6 +1349,7 @@ public:
+       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
+       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // Ambre : sans session protégée, identique à CreateCommittedResource.
+     if (pSession)
+       return E_NOTIMPL;
+@@ -1302,6 +1358,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppHeap) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pSession)
+       return E_NOTIMPL;
+     return CreateHeap(pDesc, riid, ppHeap);
+@@ -1313,6 +1370,7 @@ public:
+       const D3D12_CLEAR_VALUE *OptimizedClearValue, ID3D12ProtectedResourceSession *pSession, REFIID riid,
+       void **ppResource
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   }
+ 
+@@ -1321,6 +1379,7 @@ public:
+       D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDestCount,
+       const D3D12_RESOURCE_DESC *pDescs, D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     D3D12_RESOURCE_ALLOCATION_INFO1 resource_info;
+     bool has_msaa_resource = false;
+ 
+@@ -1517,6 +1576,7 @@ public:
+   // Ambre : IDs3D12Device5 — DXR. Seules les structures d'accélération existent pour l'instant.
+   HRESULT STDMETHODCALLTYPE
+   CreateLifetimeTracker(ID3D12LifetimeOwner *, REFIID, void **) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_NOTIMPL;
+   }
+ 
+@@ -1525,6 +1585,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   EnumerateMetaCommands(UINT *pCount, D3D12_META_COMMAND_DESC *) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pCount)
+       *pCount = 0;
+     return S_OK;
+@@ -1534,16 +1595,19 @@ public:
+   EnumerateMetaCommandParameters(
+       REFGUID, D3D12_META_COMMAND_PARAMETER_STAGE, UINT *, UINT *, D3D12_META_COMMAND_PARAMETER_DESC *
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_INVALIDARG;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateMetaCommand(REFGUID, UINT, const void *, SIZE_T, REFIID, void **) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return E_INVALIDARG;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateStateObject(const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return dxmt::CreateRTStateObject(this, pDesc, riid, ppStateObject);
+   }
+ 
+@@ -1552,6 +1616,7 @@ public:
+       const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *pDesc,
+       D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *pInfo
+   ) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pInfo)
+       return;
+     memset(pInfo, 0, sizeof(*pInfo));
+@@ -1598,6 +1663,7 @@ public:
+ 
+   D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS STDMETHODCALLTYPE
+   CheckDriverMatchingIdentifier(D3D12_SERIALIZED_DATA_TYPE, const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return D3D12_DRIVER_MATCHING_IDENTIFIER_UNSUPPORTED_TYPE;
+   }
+ 
+diff --git a/src/d3d12/d3d12_fence.cpp b/src/d3d12/d3d12_fence.cpp
+index 0a594a3..351767c 100644
+--- a/src/d3d12/d3d12_fence.cpp
++++ b/src/d3d12/d3d12_fence.cpp
+@@ -20,6 +20,15 @@
+ #include "d3d12_device_child.hpp"
+ #include "com/com_pointer.hpp"
+ #include "log/log.hpp"
++#include "util_env.hpp"
++#include "util_string.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -41,6 +50,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   QueryInterface(REFIID riid, void **ppvObject) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+     if (ppvObject == nullptr)
+       return E_POINTER;
+ 
+@@ -61,11 +71,13 @@ public:
+ 
+   UINT64 STDMETHODCALLTYPE
+   GetCompletedValue() {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return fence->completedValue();
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   SetEventOnCompletion(UINT64 Value, HANDLE Event) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (GetCompletedValue() >= Value) {
+       if (Event)
+         SetEvent(Event);
+@@ -81,12 +93,14 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   Signal(UINT64 Value) {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     fence->signal(Value);
+     return S_OK;
+   }
+ 
+   D3D12_FENCE_FLAGS STDMETHODCALLTYPE
+   GetCreationFlags() {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return flags_;
+   }
+ };
+diff --git a/src/dxgi/dxgi_adapter.cpp b/src/dxgi/dxgi_adapter.cpp
+index abccc65..03d6f7a 100644
+--- a/src/dxgi/dxgi_adapter.cpp
++++ b/src/dxgi/dxgi_adapter.cpp
+@@ -8,6 +8,14 @@
+ #include "dxgi_object.hpp"
+ #include "d3d10_1.h"
+ #include "Metal.hpp"
++#include "util_env.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -46,6 +54,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                            void **ppvObject) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+     if (ppvObject == nullptr)
+       return E_POINTER;
+ 
+@@ -70,9 +79,11 @@ public:
+   };
+ 
+   HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void **ppParent) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return factory_->QueryInterface(riid, ppParent);
+   }
+   HRESULT STDMETHODCALLTYPE GetDesc(DXGI_ADAPTER_DESC *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return E_INVALIDARG;
+ 
+@@ -94,6 +105,7 @@ public:
+     return hr;
+   }
+   HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_ADAPTER_DESC1 *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return E_INVALIDARG;
+ 
+@@ -117,6 +129,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE GetDesc2(DXGI_ADAPTER_DESC2 *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return E_INVALIDARG;
+ 
+@@ -142,6 +155,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE GetDesc3(DXGI_ADAPTER_DESC3 *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return E_INVALIDARG;
+ 
+@@ -189,6 +203,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE EnumOutputs(UINT Output,
+                                         IDXGIOutput **ppOutput) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppOutput);
+ 
+     if (ppOutput == nullptr)
+@@ -203,6 +218,7 @@ public:
+   }
+   HRESULT STDMETHODCALLTYPE
+   CheckInterfaceSupport(const GUID &guid, LARGE_INTEGER *umd_version) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     HRESULT hr = DXGI_ERROR_UNSUPPORTED;
+ 
+     if (guid == __uuidof(IDXGIDevice) || guid == __uuidof(ID3D10Device) ||
+@@ -225,17 +241,20 @@ public:
+   HRESULT STDMETHODCALLTYPE
+   RegisterHardwareContentProtectionTeardownStatusEvent(HANDLE event,
+                                                        DWORD *cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     assert(0 && "TODO");
+   }
+ 
+   void STDMETHODCALLTYPE
+   UnregisterHardwareContentProtectionTeardownStatus(DWORD cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     assert(0 && "TODO");
+   }
+ 
+   HRESULT STDMETHODCALLTYPE QueryVideoMemoryInfo(
+       UINT NodeIndex, DXGI_MEMORY_SEGMENT_GROUP MemorySegmentGroup,
+       DXGI_QUERY_VIDEO_MEMORY_INFO *pVideoMemoryInfo) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (NodeIndex > 0 || !pVideoMemoryInfo)
+       return E_INVALIDARG;
+ 
+@@ -255,6 +274,7 @@ public:
+   HRESULT STDMETHODCALLTYPE SetVideoMemoryReservation(
+       UINT NodeIndex, DXGI_MEMORY_SEGMENT_GROUP MemorySegmentGroup,
+       UINT64 Reservation) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (NodeIndex > 0)
+       return E_INVALIDARG;
+ 
+@@ -268,12 +288,14 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE RegisterVideoMemoryBudgetChangeNotificationEvent(
+       HANDLE event, DWORD *cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     *cookie = 0;
+     return S_OK;
+   }
+ 
+   void STDMETHODCALLTYPE
+   UnregisterVideoMemoryBudgetChangeNotification(DWORD cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // no op
+   }
+ 
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+index f2265b4..1f436d7 100644
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -8,6 +8,14 @@
+ #include "util_string.hpp"
+ #include "wsi_window.hpp"
+ #include "Metal.hpp"
++#include "util_env.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -21,6 +29,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                            void **ppvObject) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+     if (ppvObject == nullptr)
+       return E_POINTER;
+ 
+@@ -44,6 +53,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void **ppParent) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppParent);
+ 
+     WARN("DXGIFactory::GetParent: Unknown interface query ", str::format(riid));
+@@ -51,12 +61,14 @@ public:
+   }
+ 
+   BOOL STDMETHODCALLTYPE IsWindowedStereoEnabled() final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // We don't support Stereo 3D at the moment
+     return FALSE;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   CreateSoftwareAdapter(HMODULE Module, IDXGIAdapter **ppAdapter) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppAdapter);
+ 
+     if (ppAdapter == nullptr)
+@@ -70,6 +82,7 @@ public:
+   HRESULT STDMETHODCALLTYPE
+   CreateSwapChain(IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc,
+                   IDXGISwapChain **ppSwapChain) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (ppSwapChain == nullptr || pDesc == nullptr || pDevice == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -105,6 +118,7 @@ public:
+       IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
+       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppSwapChain);
+ 
+     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
+@@ -143,6 +157,7 @@ public:
+   HRESULT STDMETHODCALLTYPE CreateSwapChainForCoreWindow(
+       IUnknown *pDevice, IUnknown *pWindow, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppSwapChain);
+ 
+     ERR("Not implemented");
+@@ -153,6 +168,7 @@ public:
+   HRESULT STDMETHODCALLTYPE CreateSwapChainForComposition(
+       IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppSwapChain);
+ 
+     ERR("Not implemented");
+@@ -161,6 +177,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE EnumAdapters(UINT Adapter,
+                                          IDXGIAdapter **ppAdapter) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppAdapter);
+ 
+     if (ppAdapter == nullptr)
+@@ -174,6 +191,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE EnumAdapters1(UINT Adapter,
+                                           IDXGIAdapter1 **ppAdapter) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppAdapter);
+ 
+     auto devices = WMT::CopyAllDevices();
+@@ -203,6 +221,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE GetWindowAssociation(HWND *pWindowHandle) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pWindowHandle == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -212,12 +231,14 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE GetSharedResourceAdapterLuid(HANDLE hResource,
+                                                          LUID *pLuid) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND WindowHandle,
+                                                   UINT Flags) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (Flags) {
+       WARN("MakeWindowAssociation: Ignoring flags ", Flags);
+     }
+@@ -229,12 +250,14 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE RegisterOcclusionStatusWindow(
+       HWND WindowHandle, UINT wMsg, DWORD *pdwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE RegisterStereoStatusEvent(HANDLE hEvent,
+                                                       DWORD *pdwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+@@ -242,21 +265,25 @@ public:
+   HRESULT STDMETHODCALLTYPE RegisterStereoStatusWindow(HWND WindowHandle,
+                                                        UINT wMsg,
+                                                        DWORD *pdwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+ 
+   HRESULT STDMETHODCALLTYPE
+   RegisterOcclusionStatusEvent(HANDLE hEvent, DWORD *pdwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+ 
+   void STDMETHODCALLTYPE UnregisterStereoStatus(DWORD dwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+   }
+ 
+   void STDMETHODCALLTYPE UnregisterOcclusionStatus(DWORD dwCookie) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+   }
+ 
+@@ -264,6 +291,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE EnumAdapterByLuid(LUID luid, REFIID riid,
+                                               void **ppAdapter) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppAdapter);
+ 
+     // luid ignored, since Apple Silicon has only 1 GPU anyway
+@@ -282,6 +310,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE EnumWarpAdapter(REFIID iid,
+                                             void **adapter) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("DXGIFactory::EnumWrapAdapter: not implemented");
+     return DXGI_ERROR_NOT_FOUND;
+   };
+@@ -289,6 +318,7 @@ public:
+   HRESULT STDMETHODCALLTYPE
+   CheckFeatureSupport(DXGI_FEATURE Feature, void *pFeatureSupportData,
+                       UINT FeatureSupportDataSize) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     switch (Feature) {
+     case DXGI_FEATURE_PRESENT_ALLOW_TEARING: {
+       auto info = static_cast<BOOL *>(pFeatureSupportData);
+@@ -309,6 +339,7 @@ public:
+   HRESULT STDMETHODCALLTYPE
+   EnumAdapterByGpuPreference(UINT Adapter, DXGI_GPU_PREFERENCE GpuPreference,
+                              REFIID riid, void **ppvAdapter) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     // GpuPreference ignored, since Apple Silicon has only 1 GPU anyway
+     // FIXME: support Intel Mac with dedicated GPU
+     Com<IDXGIAdapter1> adapter;
+@@ -321,6 +352,7 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE RegisterAdaptersChangedEvent(HANDLE event,
+                                                            DWORD *cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!event || !cookie)
+       return E_INVALIDARG;
+     *cookie = 0;
+@@ -329,6 +361,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE UnregisterAdaptersChangedEvent(DWORD cookie) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return DXGI_ERROR_UNSUPPORTED;
+   }
+ 
+diff --git a/src/dxgi/dxgi_output.cpp b/src/dxgi/dxgi_output.cpp
+index 42495c0..6d3465c 100644
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -12,6 +12,14 @@
+ #include "util_string.hpp"
+ #include "util_env.hpp"
+ #include "wsi_monitor.hpp"
++#include "util_env.hpp"
++namespace dxmt {
++static inline bool ambre_trace_on() {
++  static const bool on = !env::getEnvVar("AMBRE_DXIL_DUMP").empty();
++  return on;
++}
++}
++
+ 
+ namespace dxmt {
+ 
+@@ -156,12 +164,14 @@ public:
+   const DXMTGammaRamp *
+   STDMETHODCALLTYPE
+   GetGammaRamp() override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return &gamma_ramp_;
+   }
+ 
+   HRESULT
+   STDMETHODCALLTYPE
+   QueryInterface(REFIID riid, void **ppvObject) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__, " ", str::format(riid));
+ 
+     if (ppvObject == nullptr)
+       return E_POINTER;
+@@ -187,12 +197,14 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   GetParent(REFIID riid, void **ppParent) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     return adapter_->QueryInterface(riid, ppParent);
+   }
+ 
+   HRESULT
+   STDMETHODCALLTYPE
+   GetDesc(DXGI_OUTPUT_DESC *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -216,6 +228,7 @@ public:
+   STDMETHODCALLTYPE
+   GetDisplayModeList(DXGI_FORMAT EnumFormat, UINT Flags, UINT *pNumModes,
+                      DXGI_MODE_DESC *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pNumModes == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -246,6 +259,7 @@ public:
+   FindClosestMatchingMode(const DXGI_MODE_DESC *pModeToMatch,
+                           DXGI_MODE_DESC *pClosestMatch,
+                           IUnknown *pConcernedDevice) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pModeToMatch || !pClosestMatch)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -282,11 +296,13 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   TakeOwnership(IUnknown *device, BOOL exclusive) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     WARN("TakeOwnership: Stub");
+     return S_OK;
+   }
+ 
+   void STDMETHODCALLTYPE ReleaseOwnership() final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     WARN("ReleaseOwnership: Stub");
+   }
+ 
+@@ -294,6 +310,7 @@ public:
+   STDMETHODCALLTYPE
+   GetGammaControlCapabilities(
+       DXGI_GAMMA_CONTROL_CAPABILITIES *gamma_caps) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (gamma_caps == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -309,6 +326,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   SetGammaControl(const DXGI_GAMMA_CONTROL *gamma_control) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (gamma_control == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -324,6 +342,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   GetGammaControl(DXGI_GAMMA_CONTROL *gamma_control) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (gamma_control == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -341,6 +360,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   SetDisplaySurface(IDXGISurface *surface) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+@@ -348,6 +368,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   GetDisplaySurfaceData(IDXGISurface *surface) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+@@ -355,6 +376,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   GetFrameStatistics(DXGI_FRAME_STATISTICS *stats) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+@@ -363,6 +385,7 @@ public:
+   STDMETHODCALLTYPE
+   GetDisplayModeList1(DXGI_FORMAT EnumFormat, UINT Flags, UINT *pNumModes,
+                       DXGI_MODE_DESC1 *pDesc) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pNumModes == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -460,6 +483,7 @@ public:
+   FindClosestMatchingMode1(const DXGI_MODE_DESC1 *pModeToMatch,
+                            DXGI_MODE_DESC1 *pClosestMatch,
+                            IUnknown *pConcernedDevice) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (!pModeToMatch || !pClosestMatch)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -547,6 +571,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   GetDisplaySurfaceData1(IDXGIResource *destination) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     ERR("Not implemented");
+     return E_NOTIMPL;
+   }
+@@ -555,6 +580,7 @@ public:
+   STDMETHODCALLTYPE
+   DuplicateOutput(IUnknown *pDevice,
+                   IDXGIOutputDuplication **ppOutputDuplication) final {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppOutputDuplication);
+ 
+     if (!pDevice)
+@@ -571,6 +597,7 @@ public:
+   CheckOverlaySupport(DXGI_FORMAT enum_format,
+                               IUnknown *concerned_device,
+                               UINT *flags) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (flags) {
+       *flags = 0;
+     }
+@@ -583,6 +610,7 @@ public:
+                                         DXGI_COLOR_SPACE_TYPE colour_space,
+                                         IUnknown *device,
+                                         UINT *flags) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (flags) {
+       *flags = 0;
+     }
+@@ -590,6 +618,7 @@ public:
+   }
+ 
+   HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_OUTPUT_DESC1 *pDesc) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (pDesc == nullptr)
+       return DXGI_ERROR_INVALID_CALL;
+ 
+@@ -630,6 +659,7 @@ public:
+   HRESULT
+   STDMETHODCALLTYPE
+   CheckHardwareCompositionSupport(UINT *flags) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     if (flags) {
+       *flags = 0;
+     }
+@@ -641,6 +671,7 @@ public:
+   DuplicateOutput1(IUnknown *pDevice, UINT flags, UINT format_count,
+                    const DXGI_FORMAT *formats,
+                    IDXGIOutputDuplication **ppOutputDuplication) override {
++    if (::dxmt::ambre_trace_on()) WARN("ambre-trace: ", __FUNCTION__);
+     InitReturnPtr(ppOutputDuplication);
+     if (!pDevice)
+       return E_INVALIDARG;
