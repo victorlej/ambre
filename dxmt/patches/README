@@ -192,6 +192,10 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
 
 0042 DXGI expose IDXGIFactory7 et utilise l’énumération d’adaptateurs de la version 6.
      Les méthodes de notification de reconnexion GPU signalent une opération non prise en charge.
+0043 DirectX 12 : réglages DRED. D3D12GetInterface (CLSID_D3D12DeviceRemovedExtendedData) et
+     D3D12GetDebugInterface rendent un objet ID3D12DeviceRemovedExtendedDataSettings(1/2) qui ne fait
+     rien, comme vkd3d-proton. GTA V Enhanced le demandait 26 fois et, faute de réponse, concluait que
+     DirectX 12 était absent (ERR_GFX_D3D_NOD3D12).
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

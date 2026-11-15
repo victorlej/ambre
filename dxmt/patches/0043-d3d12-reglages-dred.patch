@@ -1,0 +1,88 @@
+diff --git a/src/d3d12/d3d12.cpp b/src/d3d12/d3d12.cpp
+index aacf63d..a6bb780 100644
+--- a/src/d3d12/d3d12.cpp
++++ b/src/d3d12/d3d12.cpp
+@@ -22,6 +22,7 @@
+ #include "dxgi_interfaces.h"
+ #include "log/log.hpp"
+ #include "util_string.hpp"
++#include <atomic>
+ 
+ namespace dxmt {
+ 
+@@ -66,15 +67,75 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
+   return dxmt::CreateD3D12Device(dxgi_adapter_mtl.ptr(), riid, ppDevice);
+ }
+ 
++// Ambre : réglages DRED (« miettes de pain » des plantages du pilote). Rien n'est enregistré ; des
++// jeux (GTA V Enhanced) exigent seulement que l'objet existe, comme sous Windows et vkd3d-proton,
++// sinon ils concluent que DirectX 12 est absent (ERR_GFX_D3D_NOD3D12).
++namespace {
++const GUID kClsidDred = {0x4a75bbc4, 0x9ff4, 0x4ad8, {0x9f, 0x18, 0xab, 0xae, 0x84, 0xdc, 0x5f, 0xf2}};
++const GUID kIidDredSettings = {0x82bc481c, 0x6b9b, 0x4030, {0xae, 0xdb, 0x7e, 0xe3, 0xd1, 0xdf, 0x1e, 0x63}};
++const GUID kIidDredSettings1 = {0xdbd5ae51, 0x3317, 0x4f0a, {0xad, 0xf9, 0x1d, 0x7c, 0xed, 0xca, 0xae, 0x0b}};
++const GUID kIidDredSettings2 = {0x61552388, 0x01ab, 0x4008, {0xa4, 0x36, 0x83, 0xdb, 0x18, 0x95, 0x66, 0xea}};
++
++bool IsDredSettings(REFIID iid) {
++  return iid == kIidDredSettings || iid == kIidDredSettings1 || iid == kIidDredSettings2;
++}
++
++// ID3D12DeviceRemovedExtendedDataSettings2 : ordre des méthodes de la table COM (Settings, puis 1, puis 2).
++class AmbreDredSettings final : public IUnknown {
++public:
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override {
++    if (!object)
++      return E_POINTER;
++    if (riid == __uuidof(IUnknown) || IsDredSettings(riid)) {
++      AddRef();
++      *object = this;
++      return S_OK;
++    }
++    *object = nullptr;
++    return E_NOINTERFACE;
++  }
++  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
++  ULONG STDMETHODCALLTYPE Release() override {
++    ULONG refs = --refs_;
++    if (!refs)
++      delete this;
++    return refs;
++  }
++  virtual void STDMETHODCALLTYPE SetAutoBreadcrumbsEnablement(UINT) {}
++  virtual void STDMETHODCALLTYPE SetPageFaultEnablement(UINT) {}
++  virtual void STDMETHODCALLTYPE SetWatsonDumpEnablement(UINT) {}
++  virtual void STDMETHODCALLTYPE SetBreadcrumbContextEnablement(UINT) {}
++  virtual void STDMETHODCALLTYPE UseMarkersOnlyAutoBreadcrumbs(BOOL) {}
++
++private:
++  std::atomic<ULONG> refs_ = 1;
++};
++
++HRESULT CreateDredSettings(void **object) {
++  if (!object)
++    return S_FALSE;
++  *object = new AmbreDredSettings();
++  return S_OK;
++}
++} // namespace
++
+ extern "C" HRESULT WINAPI
+ D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **debug) {
++  if (rcslid == kClsidDred && IsDredSettings(iid))
++    return CreateDredSettings(debug);
+   WARN("D3D12GetInterface: Unknown interface query ", dxmt::str::format(iid));
++  if (debug)
++    *debug = nullptr;
+   return E_NOINTERFACE;
+ }
+ 
+ extern "C" HRESULT WINAPI
+ D3D12GetDebugInterface(REFIID iid, void **debug) {
++  if (IsDredSettings(iid))
++    return CreateDredSettings(debug);
+   WARN("D3D12GetDebugInterface: Unknown interface query ", dxmt::str::format(iid));
++  if (debug)
++    *debug = nullptr;
+   return E_NOINTERFACE;
+ }
+ 
