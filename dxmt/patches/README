@@ -196,6 +196,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      D3D12GetDebugInterface rendent un objet ID3D12DeviceRemovedExtendedDataSettings(1/2) qui ne fait
      rien, comme vkd3d-proton. GTA V Enhanced le demandait 26 fois et, faute de réponse, concluait que
      DirectX 12 était absent (ERR_GFX_D3D_NOD3D12).
+0044 Diagnostic DirectX 12 (seulement avec AMBRE_DXIL_DUMP) : chaque CheckFeatureSupport (fonction,
+     taille, résultat, octets rendus), chaque QueryInterface refusé sur l'appareil et chaque
+     D3D12CreateDevice (niveau, interface, résultat) sont écrits dans le journal.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.

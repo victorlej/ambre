@@ -1,0 +1,74 @@
+diff --git a/src/d3d12/d3d12.cpp b/src/d3d12/d3d12.cpp
+index a6bb780..4005028 100644
+--- a/src/d3d12/d3d12.cpp
++++ b/src/d3d12/d3d12.cpp
+@@ -22,6 +22,7 @@
+ #include "dxgi_interfaces.h"
+ #include "log/log.hpp"
+ #include "util_string.hpp"
++#include "util_env.hpp"
+ #include <atomic>
+ 
+ namespace dxmt {
+@@ -35,8 +36,11 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
+   Com<IDXGIFactory> dxgi_factory = nullptr;
+   Com<IMTLDXGIAdapter> dxgi_adapter_mtl = nullptr;
+ 
+-  if (MinimumFeatureLevel < D3D_FEATURE_LEVEL_11_0)
++  if (MinimumFeatureLevel < D3D_FEATURE_LEVEL_11_0) {
++    if (!env::getEnvVar("AMBRE_DXIL_DUMP").empty())
++      WARN("ambre-diag: D3D12CreateDevice niveau trop bas ", (unsigned)MinimumFeatureLevel);
+     return E_INVALIDARG;
++  }
+ 
+   HRESULT hr;
+ 
+@@ -64,7 +68,10 @@ D3D12CreateDevice(IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REF
+   if (!ppDevice)
+     return S_FALSE;
+ 
+-  return dxmt::CreateD3D12Device(dxgi_adapter_mtl.ptr(), riid, ppDevice);
++  hr = dxmt::CreateD3D12Device(dxgi_adapter_mtl.ptr(), riid, ppDevice);
++  if (!env::getEnvVar("AMBRE_DXIL_DUMP").empty())
++    WARN("ambre-diag: D3D12CreateDevice niveau ", (unsigned)MinimumFeatureLevel, " interface ", str::format(riid), " -> ", (unsigned)hr);
++  return hr;
+ }
+ 
+ // Ambre : réglages DRED (« miettes de pain » des plantages du pilote). Rien n'est enregistré ; des
+diff --git a/src/d3d12/d3d12_device.cpp b/src/d3d12/d3d12_device.cpp
+index 72172ec..89106ce 100644
+--- a/src/d3d12/d3d12_device.cpp
++++ b/src/d3d12/d3d12_device.cpp
+@@ -164,6 +164,8 @@ public:
+     if (riid == kD3D12DeviceDownlevelUUID)
+       return E_NOINTERFACE;
+ 
++    if (AmbreDxilDiagnostic())
++      WARN("ambre-diag: D3D12Device QueryInterface refusé ", str::format(riid));
+     if (logQueryInterfaceError(__uuidof(ID3D12Device1), riid)) {
+       WARN("D3D12Device: Unknown interface query ", str::format(riid));
+     }
+@@ -223,6 +225,23 @@ public:
+ 
+   HRESULT STDMETHODCALLTYPE
+   CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureData, UINT DataSize) {
++    // Ambre (diagnostic, AMBRE_DXIL_DUMP) : chaque vérification du jeu et ce qu'on lui répond.
++    if (AmbreDxilDiagnostic()) {
++      HRESULT hr = CheckFeatureSupportImpl(Feature, pFeatureData, DataSize);
++      std::string bytes;
++      for (UINT i = 0; pFeatureData && i < DataSize && i < 64; i++) {
++        static const char hex[] = "0123456789abcdef";
++        auto b = reinterpret_cast<const unsigned char *>(pFeatureData)[i];
++        bytes += hex[b >> 4]; bytes += hex[b & 15];
++      }
++      WARN("ambre-diag: CheckFeatureSupport ", (unsigned)Feature, " taille ", DataSize, " -> ", (unsigned)hr, " ", bytes);
++      return hr;
++    }
++    return CheckFeatureSupportImpl(Feature, pFeatureData, DataSize);
++  }
++
++  HRESULT
++  CheckFeatureSupportImpl(D3D12_FEATURE Feature, void *pFeatureData, UINT DataSize) {
+     auto metal = GetMTLDevice();
+     switch (Feature) {
+     case D3D12_FEATURE_ARCHITECTURE: {
