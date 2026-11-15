@@ -1,0 +1,42 @@
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -14,7 +14,7 @@
+ Com<IMTLDXGIAdapter> CreateAdapter(WMT::Device Device,
+                                    IDXGIFactory2 *pFactory, Config &config);
+ 
+-class MTLDXGIFactory : public MTLDXGIObject<IDXGIFactory6> {
++class MTLDXGIFactory : public MTLDXGIObject<IDXGIFactory7> {
+ 
+ public:
+   MTLDXGIFactory(UINT Flags) : flags_(Flags) {};
+@@ -30,7 +30,8 @@
+         riid == __uuidof(IDXGIFactory) || riid == __uuidof(IDXGIFactory1) ||
+         riid == __uuidof(IDXGIFactory2) || riid == __uuidof(IDXGIFactory2) ||
+         riid == __uuidof(IDXGIFactory3) || riid == __uuidof(IDXGIFactory4) ||
+-        riid == __uuidof(IDXGIFactory5) || riid == __uuidof(IDXGIFactory6)) {
++        riid == __uuidof(IDXGIFactory5) || riid == __uuidof(IDXGIFactory6) ||
++        riid == __uuidof(IDXGIFactory7)) {
+       *ppvObject = ref(this);
+       return S_OK;
+     }
+@@ -318,6 +319,19 @@
+     return adapter->QueryInterface(riid, ppvAdapter);
+   };
+ 
++  HRESULT STDMETHODCALLTYPE RegisterAdaptersChangedEvent(HANDLE event,
++                                                           DWORD *cookie) override {
++    if (!event || !cookie)
++      return E_INVALIDARG;
++    *cookie = 0;
++    // DXMT exposes the adapter enumeration but does not deliver hot-plug events.
++    return DXGI_ERROR_UNSUPPORTED;
++  }
++
++  HRESULT STDMETHODCALLTYPE UnregisterAdaptersChangedEvent(DWORD cookie) override {
++    return DXGI_ERROR_UNSUPPORTED;
++  }
++
+ private:
+   UINT flags_;
+ 
