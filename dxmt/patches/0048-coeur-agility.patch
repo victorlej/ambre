@@ -1,0 +1,50 @@
+diff --git a/src/d3d12/d3d12.cpp b/src/d3d12/d3d12.cpp
+index 4005028..02022f8 100644
+--- a/src/d3d12/d3d12.cpp
++++ b/src/d3d12/d3d12.cpp
+@@ -24,6 +24,8 @@
+ #include "util_string.hpp"
+ #include "util_env.hpp"
+ #include <atomic>
++#include <string>
++#include <cstring>
+ 
+ namespace dxmt {
+ 
+@@ -146,12 +148,36 @@ D3D12GetDebugInterface(REFIID iid, void **debug) {
+   return E_NOINTERFACE;
+ }
+ 
++// Ambre (essai GTA V Enhanced) : sous Windows, d3d12.dll charge le cœur du SDK Agility indiqué par le jeu
++// (exports D3D12SDKVersion / D3D12SDKPath, ici « .\D3D12-REDIST\D3D12Core.dll »). Certains jeux vérifient
++// sa présence. AMBRE_AGILITY_CORE=jeu : celui du jeu ; =wine : le d3d12core de Wine. Rien n'y est appelé.
++static void
++AmbreLoadAgilityCore() {
++  char mode[16] = {};
++  if (!GetEnvironmentVariableA("AMBRE_AGILITY_CORE", mode, sizeof(mode)))
++    return;
++  HMODULE core = nullptr;
++  if (!strcmp(mode, "wine")) {
++    core = LoadLibraryW(L"d3d12core.dll");
++  } else if (!strcmp(mode, "jeu")) {
++    auto sdk_path = reinterpret_cast<const char *const *>(GetProcAddress(GetModuleHandleW(nullptr), "D3D12SDKPath"));
++    char exe[MAX_PATH] = {};
++    if (sdk_path && *sdk_path && GetModuleFileNameA(nullptr, exe, MAX_PATH)) {
++      std::string path(exe);
++      path = path.substr(0, path.find_last_of('\\') + 1) + *sdk_path + "D3D12Core.dll";
++      core = LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
++    }
++  }
++  WARN("ambre-agility: cœur ", mode, core ? " chargé" : " NON chargé");
++}
++
+ BOOL WINAPI
+ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+   if (reason != DLL_PROCESS_ATTACH)
+     return TRUE;
+ 
+   DisableThreadLibraryCalls(instance);
++  AmbreLoadAgilityCore();
+   return TRUE;
+ }
+ 

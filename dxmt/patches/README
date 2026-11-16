@@ -208,6 +208,9 @@ Correctifs d'Ambre Metal (DXMT, LGPL 2.1, © CodeWeavers / 3Shain), appliqués p
      rendu par tuiles ; DXGI : toute la mémoire de travail en mémoire vidéo dédiée). NVAPI :
      GetPhysicalFrameBufferSize / GetVirtualFrameBufferSize (mémoire de travail Metal, en Ko) et
      GetLogicalGPUFromPhysicalGPU (même identifiant), demandés par GTA V Enhanced.
+0048 AMBRE_AGILITY_CORE=jeu|wine : au chargement de d3d12.dll, charge le cœur du SDK Agility (celui
+     indiqué par l'export D3D12SDKPath du jeu, ou le d3d12core de Wine), comme le d3d12.dll de Windows.
+     Essai GTA V Enhanced, qui cherche D3D12Core.dll. Rien n'y est appelé.
 
 Règle : ici seulement des correctifs et des prises génériques ; les fonctions d'Ambre Pro
 restent dans leur module privé.
